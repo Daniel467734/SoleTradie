@@ -1,0 +1,516 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
+
+import 'estimate_item.dart';
+import 'estimate_version.dart';
+import 'invoice.dart'; // or wherever your Invoice class is
+
+/// Job status history entry
+class JobStatusHistory {
+  final JobStatus status;
+  final DateTime timestamp;
+  final String? reason; // Optional reason for status change
+  final String? documentId; // ID of related document (estimate/invoice)
+
+  JobStatusHistory({
+    required this.status,
+    required this.timestamp,
+    this.reason,
+    this.documentId,
+  });
+
+  factory JobStatusHistory.fromJson(Map<String, dynamic> json) {
+    return JobStatusHistory(
+      status: JobStatus.fromString(json['status']),
+      timestamp: DateTime.parse(json['timestamp']),
+      reason: json['reason'],
+      documentId: json['documentId'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'status': status.name,
+      'timestamp': timestamp.toIso8601String(),
+      'reason': reason,
+      'documentId': documentId,
+    };
+  }
+}
+
+/// Job status enum with priority order (higher priority = more recent status)
+enum JobStatus {
+  active,                    // 0 - Default status
+  estimateCreated,          // 1 - Estimate/Quote Created (triggered by creating PDF)
+  estimateSent,             // 2 - Estimate/Quote sent (triggered by email sent with estimate attached)
+  invoiceCreated,           // 3 - Invoice Created (triggered by creating PDF)
+  invoiceSent,              // 4 - Invoice sent (triggered by email sent with invoice attached)
+  invoicePaid,              // 5 - Invoice Paid (triggered by invoice getting paid)
+  jobComplete,              // 6 - Job complete (question after invoice sent via email)
+  archived;                 // 7 - Archived
+
+  String get displayName {
+    switch (this) {
+      case JobStatus.active:
+        return 'Active';
+      case JobStatus.estimateCreated:
+        return 'Estimate/Quote Created';
+      case JobStatus.estimateSent:
+        return 'Estimate/Quote Sent';
+      case JobStatus.invoiceCreated:
+        return 'Invoice Created';
+      case JobStatus.invoiceSent:
+        return 'Invoice Sent';
+      case JobStatus.invoicePaid:
+        return 'Invoice Paid';
+      case JobStatus.jobComplete:
+        return 'Job Complete';
+      case JobStatus.archived:
+        return 'Archived';
+    }
+  }
+
+  /// Get priority for status updates (higher number = higher priority)
+  int get priority => index;
+
+  static JobStatus fromString(String? status) {
+    if (status == null) return JobStatus.active;
+    return JobStatus.values.firstWhere(
+      (s) => s.name.toLowerCase() == status.toLowerCase() ||
+             s.displayName.toLowerCase() == status.toLowerCase(),
+      orElse: () => JobStatus.active,
+    );
+  }
+}
+
+class Job {
+  String id;
+  String title;
+  String? description; // <-- remove 'final'
+  final String? customerName;
+  final String? address;
+  JobStatus currentStatus; // Changed from String? status to JobStatus
+  final DateTime? created;
+  final DateTime? dueDate;
+  final String? jobType;
+  List<EstimateItem> estimateItems;
+  List<EstimateVersion> estimateVersions;
+  String? paymentTerms; // Add this line
+  List<String>? attachments; // Add this line
+  final String? customerEmail; // <-- Add this line
+  Invoice? invoice; // <-- Add this line
+  List<Invoice> invoices; // <-- Add this line for multiple invoices
+  List<String>? notes; // <-- Add this line
+  List<JobStatusHistory> statusHistory; // Track status changes
+
+  Job({
+    required this.id,
+    required this.title,
+    this.description,
+    this.customerName,
+    this.address,
+    JobStatus? status,
+    this.created,
+    this.dueDate,
+    this.jobType,
+    List<EstimateItem>? estimateItems,
+    this.customerEmail,
+    this.paymentTerms,
+    this.attachments,
+    List<EstimateVersion>? estimateVersions,
+    List<Invoice>? invoices,
+    this.notes,
+    List<JobStatusHistory>? statusHistory,
+  }) : currentStatus = status ?? JobStatus.active,
+       estimateItems = estimateItems ?? [],
+       estimateVersions = estimateVersions ?? [],
+       invoices = invoices ?? [],
+       statusHistory = statusHistory ?? [];
+
+  Job copyWith({
+    String? id,
+    String? title,
+    String? customerName,
+    JobStatus? status,
+    DateTime? created,
+    DateTime? dueDate,
+    String? jobType,
+    String? address,
+    List<EstimateItem>? estimateItems,
+    List<EstimateVersion>? estimateVersions,
+    List<Invoice>? invoices,
+    List<String>? attachments,
+    String? description,
+    String? customerEmail,
+    String? paymentTerms,
+    List<String>? notes,
+    List<JobStatusHistory>? statusHistory,
+  }) {
+    return Job(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      customerName: customerName ?? this.customerName,
+      status: status ?? currentStatus,
+      created: created ?? this.created,
+      dueDate: dueDate ?? this.dueDate,
+      jobType: jobType ?? this.jobType,
+      address: address ?? this.address,
+      estimateItems: estimateItems ?? this.estimateItems,
+      customerEmail: customerEmail ?? this.customerEmail,
+      attachments: attachments ?? this.attachments,
+      estimateVersions: estimateVersions ?? this.estimateVersions,
+      invoices: invoices ?? this.invoices,
+      description: description ?? this.description,
+      paymentTerms: paymentTerms ?? this.paymentTerms,
+      notes: notes ?? this.notes,
+      statusHistory: statusHistory ?? this.statusHistory,
+    );
+  }
+
+  factory Job.fromJson(Map<String, dynamic> json) {
+    final job = Job(
+      id: json['id'] as String,
+      title: json['title'] as String,
+      description: json['description'] as String?, // <-- Add this line
+      customerName: json['customerName'] as String?,
+      address: json['address'] as String?,
+      status: JobStatus.fromString(json['status'] as String?),
+      created: json['created'] != null ? DateTime.tryParse(json['created'] as String) : null,
+      dueDate: json['dueDate'] != null ? DateTime.tryParse(json['dueDate'] as String) : null,
+      jobType: json['jobType'] as String?,
+      estimateItems: (json['estimateItems'] as List<dynamic>?)
+              ?.map((item) => EstimateItem.fromJson(item as Map<String, dynamic>))
+              .toList(),
+      customerEmail: json['customerEmail'] as String?,
+      paymentTerms: json['paymentTerms'] as String?, // <-- ADD THIS LINE
+      attachments: (json['attachments'] as List?)?.map((e) => e.toString()).toList(), // <-- ADD THIS LINE
+      estimateVersions: (json['estimateVersions'] as List<dynamic>?)
+          ?.map((e) => EstimateVersion.fromJson(e))
+          .toList(),
+      invoices: (json['invoices'] as List<dynamic>?)
+          ?.map((e) => Invoice.fromJson(e))
+          .toList(),
+      notes: (json['notes'] as List?)?.map((e) => e.toString()).toList(),
+      statusHistory: (json['statusHistory'] as List<dynamic>?)
+          ?.map((e) => JobStatusHistory.fromJson(e))
+          .toList(),
+    );
+    
+    // Sync invoices after loading
+    job.syncInvoices();
+    return job;
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'description': description, // <-- Add this line
+      'customerName': customerName,
+      'address': address,
+      'status': currentStatus.name,
+      'created': created?.toIso8601String(),
+      'dueDate': dueDate?.toIso8601String(),
+      'jobType': jobType,
+      'estimateItems': estimateItems.map((item) => item.toJson()).toList(),
+      'customerEmail': customerEmail,
+      'paymentTerms': paymentTerms, // <-- ADD THIS LINE
+      'attachments': attachments,   // <-- ADD THIS LINE
+      'estimateVersions': estimateVersions.map((e) => e.toJson()).toList(),
+      'invoices': invoices.map((e) => e.toJson()).toList(),
+      'notes': notes,
+      'statusHistory': statusHistory.map((e) => e.toJson()).toList(),
+    };
+  }
+
+  List<EstimateVersion> get estimates =>
+      estimateVersions.where((v) => 
+        (v.type == 'estimate' || v.type == 'quote') && 
+        v.status != 'in_progress'
+      ).toList();
+
+  List<EstimateVersion> get invoiceVersions =>
+      estimateVersions.where((v) => v.type == 'invoice').toList();
+
+  // Helper method to sync EstimateVersion invoices to Invoice objects
+  void syncInvoices() {
+    // Instead of clearing all invoices, be more selective to preserve manual updates
+    
+    // First, update existing Invoice objects with data from EstimateVersions
+    for (final version in invoiceVersions) {
+      final existingInvoiceIndex = invoices.indexWhere((inv) => 
+        inv.id == version.id || 
+        inv.id == version.invoiceNumber ||
+        (inv.total == version.amount && inv.customerName == customerName)
+      );
+      
+      if (existingInvoiceIndex != -1) {
+        // Update existing invoice, preserving any manual updates like isPaid status
+        final existingInvoice = invoices[existingInvoiceIndex];
+        final updatedInvoice = Invoice(
+          id: version.id ?? version.invoiceNumber ?? existingInvoice.id,
+          total: version.amount,
+          amount: version.amount,
+          // Preserve the paid status if it was manually set, otherwise use EstimateVersion status
+          isPaid: existingInvoice.isPaid || version.isPaid,
+          dueDate: version.dueDate,
+          customerId: id,
+          customerName: customerName ?? 'Unknown',
+          status: (existingInvoice.isPaid || version.isPaid) ? 'paid' : version.isArchived ? 'archived' : 'unpaid',
+          isArchived: version.isArchived,
+          filePath: version.filePath,
+        );
+        invoices[existingInvoiceIndex] = updatedInvoice;
+        
+        // Also sync the paid status back to EstimateVersion if it was manually updated
+        if (existingInvoice.isPaid && !version.isPaid) {
+          version.isPaid = true;
+          print('✅ Synced manual payment status back to EstimateVersion: ${version.id}');
+        }
+      } else {
+        // Create new invoice only if it doesn't exist
+        final newInvoice = Invoice(
+          id: version.id ?? version.invoiceNumber ?? 'inv-${DateTime.now().millisecondsSinceEpoch}',
+          total: version.amount,
+          amount: version.amount,
+          isPaid: version.isPaid,
+          dueDate: version.dueDate,
+          customerId: id,
+          customerName: customerName ?? 'Unknown',
+          status: version.isPaid ? 'paid' : version.isArchived ? 'archived' : 'unpaid',
+          isArchived: version.isArchived,
+          filePath: version.filePath,
+        );
+        invoices.add(newInvoice);
+      }
+    }
+    
+    // Remove invoices that no longer have corresponding EstimateVersions
+    invoices.removeWhere((inv) => !invoiceVersions.any((v) => 
+      v.id == inv.id || 
+      v.invoiceNumber == inv.id ||
+      (v.amount == inv.total && v.type == 'invoice')
+    ));
+  }
+
+  // Get all outstanding invoice amounts (both from EstimateVersions and Invoice objects)
+  double get totalOutstandingAmount {
+    double total = 0.0;
+    
+    // Add from EstimateVersion invoices
+    for (final version in invoiceVersions) {
+      if (!version.isPaid && !version.isArchived) {
+        total += version.amount;
+      }
+    }
+    
+    // Add from Invoice objects (avoid double counting by checking IDs)
+    for (final invoice in invoices) {
+      if (!invoice.isPaid && !invoice.isArchived) {
+        // Only add if this invoice doesn't correspond to an EstimateVersion
+        final hasMatchingVersion = invoiceVersions.any((v) => 
+          v.id == invoice.id || v.invoiceNumber == invoice.id);
+        if (!hasMatchingVersion) {
+          total += invoice.amount;
+        }
+      }
+    }
+    
+    return total;
+  }
+
+  /// Update job status with automatic priority handling
+  void updateStatus(JobStatus newStatus, {String? reason, String? documentId}) {
+    // Only update if new status has higher or equal priority
+    if (newStatus.priority >= currentStatus.priority) {
+      // Add to history
+      statusHistory.add(JobStatusHistory(
+        status: newStatus,
+        timestamp: DateTime.now(),
+        reason: reason,
+        documentId: documentId,
+      ));
+      
+      currentStatus = newStatus;
+    }
+  }
+
+  /// Trigger status updates based on document events
+  void onEstimateCreated(String documentId) {
+    updateStatus(JobStatus.estimateCreated, 
+      reason: 'Estimate/Quote PDF created', 
+      documentId: documentId);
+  }
+
+  void onEstimateSent(String documentId) {
+    updateStatus(JobStatus.estimateSent, 
+      reason: 'Estimate/Quote sent via email', 
+      documentId: documentId);
+  }
+
+  void onInvoiceCreated(String documentId) {
+    updateStatus(JobStatus.invoiceCreated, 
+      reason: 'Invoice PDF created', 
+      documentId: documentId);
+  }
+
+  void onInvoiceSent(String documentId) {
+    updateStatus(JobStatus.invoiceSent, 
+      reason: 'Invoice sent via email', 
+      documentId: documentId);
+  }
+
+  void onInvoicePaid(String documentId) {
+    updateStatus(JobStatus.invoicePaid, 
+      reason: 'Invoice marked as paid', 
+      documentId: documentId);
+  }
+
+  void onJobComplete() {
+    updateStatus(JobStatus.jobComplete, 
+      reason: 'Job marked as complete');
+  }
+
+  /// Handle special case: both estimate and invoice sent in same email
+  void onEstimateAndInvoiceSent(String estimateId, String invoiceId) {
+    // Always prioritize estimate sent when both are sent together
+    updateStatus(JobStatus.estimateSent, 
+      reason: 'Estimate and Invoice sent together (prioritizing estimate)', 
+      documentId: estimateId);
+  }
+
+  /// Get the latest status from estimate/invoice versions and auto-update
+  void syncStatusFromDocuments() {
+    // Track the highest priority status found
+    JobStatus highestStatus = JobStatus.active;
+    String? documentId;
+    String? reason;
+
+    // Check estimates/quotes
+    for (final version in estimateVersions) {
+      if (version.type == 'estimate' || version.type == 'quote') {
+        if (version.filePath != null) {
+          // Document was created
+          if (JobStatus.estimateCreated.priority > highestStatus.priority) {
+            highestStatus = JobStatus.estimateCreated;
+            documentId = version.id;
+            reason = 'Estimate/Quote PDF found';
+          }
+        }
+        // Add logic here for sent status when email tracking is implemented
+      }
+    }
+
+    // Check invoices
+    for (final version in estimateVersions) {
+      if (version.type == 'invoice') {
+        if (version.filePath != null) {
+          // Invoice was created
+          if (JobStatus.invoiceCreated.priority > highestStatus.priority) {
+            highestStatus = JobStatus.invoiceCreated;
+            documentId = version.id;
+            reason = 'Invoice PDF found';
+          }
+        }
+        
+        if (version.isPaid) {
+          // Invoice was paid
+          if (JobStatus.invoicePaid.priority > highestStatus.priority) {
+            highestStatus = JobStatus.invoicePaid;
+            documentId = version.id;
+            reason = 'Invoice marked as paid';
+          }
+        }
+      }
+    }
+
+    // Update if we found a higher priority status
+    if (highestStatus.priority > currentStatus.priority) {
+      updateStatus(highestStatus, reason: reason, documentId: documentId);
+    }
+  }
+
+  /// Get display name for current status
+  String get statusDisplayName => currentStatus.displayName;
+
+  /// Check if job matches any of the given statuses
+  bool matchesStatuses(List<JobStatus> statuses) {
+    return statuses.contains(currentStatus);
+  }
+
+  Future<void> save() async {
+    try {
+      // Get the application documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final jobsDir = Directory('${directory.path}/jobs');
+      
+      // Create jobs directory if it doesn't exist
+      if (!await jobsDir.exists()) {
+        await jobsDir.create(recursive: true);
+      }
+      
+      // Save job data to JSON file (local backup)
+      final jobFile = File('${jobsDir.path}/$id.json');
+      final jobData = toJson();
+      await jobFile.writeAsString(jsonEncode(jobData));
+      
+      // Also update the main jobs.json file with all jobs
+      final mainJobsFile = File('${directory.path}/jobs.json');
+      List<Job> allJobs = [];
+      
+      // Load existing jobs
+      if (await mainJobsFile.exists()) {
+        try {
+          final jsonString = await mainJobsFile.readAsString();
+          if (jsonString.trim().isNotEmpty) {
+            final List<dynamic> jsonList = jsonDecode(jsonString);
+            allJobs = jsonList.map((e) => Job.fromJson(e)).toList();
+          }
+        } catch (e) {
+          print('Error loading existing jobs: $e');
+        }
+      }
+      
+      // Update or add this job
+      final existingIndex = allJobs.indexWhere((job) => job.id == id);
+      if (existingIndex >= 0) {
+        allJobs[existingIndex] = this;
+      } else {
+        allJobs.add(this);
+      }
+      
+      // Save all jobs back to main file
+      final allJobsJson = allJobs.map((job) => job.toJson()).toList();
+      await mainJobsFile.writeAsString(jsonEncode(allJobsJson));
+      
+      print('✅ Job saved successfully to local storage: $id');
+      
+      // Try to sync to Firebase if available
+      try {
+        // Import Firebase service here to avoid circular imports
+        // This will be handled by the Firebase integration service
+        print('🔄 Job will be synced to Firebase by integration service');
+      } catch (e) {
+        print('⚠️ Firebase sync not available: $e');
+      }
+      
+    } catch (e) {
+      print('❌ Error saving job: $e');
+      rethrow;
+    }
+  }
+}
+
+final newJob = Job(
+  id: 'job-001',
+  title: 'Install lights',
+  customerName: 'Jane Smith',
+  status: JobStatus.active,
+  created: DateTime.now(),
+  dueDate: DateTime.now().add(const Duration(days: 7)),
+  jobType: 'Estimate', // or 'Invoice'
+  address: '123 Main St, Springfield, USA',
+  customerEmail: 'jane.smith@example.com', // <-- Ensure email is set
+);

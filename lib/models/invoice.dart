@@ -1,0 +1,101 @@
+// Define the Invoice class if it does not exist
+class Invoice {
+  // Add an id field to uniquely identify each invoice
+  final String id;
+  final double total;
+  final double amount; // Add amount property for compatibility
+  final bool isPaid;
+  final DateTime? dueDate;
+  // Add other fields as needed
+  final String customerId;
+  final String customerName;
+  final String status; // e.g. 'unpaid', 'sent', 'paid'
+  bool emailSent; // <-- Add this line
+  final bool isArchived; // Add this for compatibility
+  final String? filePath; // Add filePath property for PDF storage
+
+  Invoice({
+    required this.id,
+    required this.total,
+    double? amount,
+    required this.isPaid,
+    this.dueDate,
+    // Add other fields as needed
+    required this.customerId,
+    required this.customerName,
+    this.status = 'unpaid',
+    this.emailSent = false, // <-- Add this default
+    this.isArchived = false, // <-- Add this default
+    this.filePath, // Add filePath parameter
+  }) : amount = amount ?? total;
+
+  Invoice copyWith({
+    String? id,
+    double? total,
+    double? amount,
+    bool? isPaid,
+    DateTime? dueDate,
+    // Add other fields as needed
+    String? customerId,
+    String? customerName,
+    String? status,
+    bool? emailSent,
+    bool? isArchived,
+    String? filePath,
+  }) {
+    return Invoice(
+      id: id ?? this.id,
+      total: total ?? this.total,
+      amount: amount ?? this.amount,
+      isPaid: isPaid ?? this.isPaid,
+      dueDate: dueDate ?? this.dueDate,
+      // Add other fields as needed
+      customerId: customerId ?? this.customerId,
+      customerName: customerName ?? this.customerName,
+      status: status ?? this.status,
+      emailSent: emailSent ?? this.emailSent,
+      isArchived: isArchived ?? this.isArchived,
+      filePath: filePath ?? this.filePath,
+    );
+  }
+
+  // Update fromJson/toJson if needed:
+  factory Invoice.fromJson(Map<String, dynamic> json) => Invoice(
+        id: json['id'],
+        total: (json['total'] ?? 0).toDouble(),
+        amount: (json['amount'] ?? json['total'] ?? 0).toDouble(),
+        isPaid: json['isPaid'] ?? false,
+        dueDate: json['dueDate'] != null ? DateTime.tryParse(json['dueDate']) : null,
+        customerId: json['customerId'] ?? '',
+        customerName: json['customerName'] ?? '',
+        status: json['status'] ?? 'unpaid',
+        emailSent: json['emailSent'] ?? false,
+        isArchived: json['isArchived'] ?? false,
+        filePath: json['filePath'],
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'total': total,
+        'amount': amount,
+        'isPaid': isPaid,
+        'dueDate': dueDate?.toIso8601String(),
+        'customerId': customerId,
+        'customerName': customerName,
+        'status': status,
+        'emailSent': emailSent,
+        'isArchived': isArchived,
+        'filePath': filePath,
+      };
+}
+
+final invoice = Invoice(
+  id: 'inv-001',
+  total: 100.0,
+  isPaid: false, // <-- Always provide this value
+  dueDate: DateTime.now().add(const Duration(days: 7)),
+  customerId: 'cust-001',
+  customerName: 'John Doe',
+  filePath: null, // Add filePath parameter
+);
+

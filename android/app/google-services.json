@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "126990067919",
+    "project_id": "soletradie-ab850",
+    "storage_bucket": "soletradie-ab850.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:126990067919:android:30fa79edb5edfa7a7e2fba",
+        "android_client_info": {
+          "package_name": "com.example.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCWu8XlnMw07NUgjJkHVpvppTubLKny5fU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

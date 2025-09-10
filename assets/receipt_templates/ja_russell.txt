@@ -1,0 +1,33 @@
+[
+  {
+    "name": "JA Russell",
+    "prompt": "You are reading a JA Russell invoice. Extract all line items as a JSON array.
+For each item, return:
+- "id_number": the Stock code (e.g. "100010"). 
+  **Never use the Bin column. Never use the Name/Description column as the ID code, even if it contains numbers or codes. 
+  The Stock code is always to the right of the Bin column and is numeric.**
+- "item_name": the Name/Description (e.g. "1.5mm² TWIN & EARTH CABLE")
+- "quantity": the Qty (as an integer)
+
+Ignore columns like Bin, Unit, B/ord, Price, Net Price, Extension.
+
+The Bin column is often the first column and may contain numbers or be blank. The Stock code is always the next column to the right of Bin and is numeric (e.g. "100010"). Do not use the Bin value as the Stock code.
+
+Example input:
+Bin  Stock code  Name/Description         Qty  Unit  B/ord  Price  Net Price  Extension
+---  ----------  -----------------------  ---  ----  -----  -----  ---------  ---------
+ 12   100010      1.5mm² TWIN & EARTH CABLE  2   RL           45.00    45.00      90.00
+      200020      10A SINGLE LIGHT SWITCH    5   EA           3.00     3.00       15.00
+
+Example output:
+[
+  {"id_number": "100010", "item_name": "1.5mm² TWIN & EARTH CABLE", "quantity": 2},
+  {"id_number": "200020", "item_name": "10A SINGLE LIGHT SWITCH", "quantity": 5}
+]
+
+If you can't find a code or quantity, leave it blank or use 1 for quantity.
+
+Now extract from this invoice text:
+$text
+ }
+]
