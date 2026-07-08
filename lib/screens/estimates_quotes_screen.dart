@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import '../models/job.dart' as job_model;
 import '../models/estimate_version.dart';
-import 'pricebook_screen.dart';
+import 'pricebook_extensive_screen.dart' show PriceBookItem;
 import 'job_details_screen.dart';
 import 'estimate_builder_screen.dart';
+import '../services/firestore_service.dart';
 
 class EstimatesQuotesScreen extends StatefulWidget {
   final List<job_model.Job> jobs;
@@ -92,7 +93,7 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
             padding: const EdgeInsets.all(16.0),
             child: Column(
               children: [
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   decoration: const InputDecoration(
                     labelText: 'Search by job, customer, or document number',
                     prefixIcon: Icon(Icons.search),
@@ -260,6 +261,15 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
                                     fontSize: 12,
                                   ),
                                 ),
+                              const SizedBox(height: 4),
+                              Text(
+                                version.emailSent ? 'Sent' : 'Not sent',
+                                style: TextStyle(
+                                  color: version.emailSent ? Colors.green : Colors.red,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ],
                           ),
                           trailing: PopupMenuButton<String>(
@@ -283,6 +293,10 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
                                       builder: (_) => EstimateBuilderScreen(
                                         job: job,
                                         initialItems: version.items,
+                                        initialSubsections: version.sections,
+                                        initialDepositAmount: version.depositAmount,
+                                        initialDepositPercentage: version.depositPercentage,
+                                        initialIsDepositPercentage: version.isDepositPercentage,
                                       ),
                                     ),
                                   );
@@ -312,14 +326,59 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
                                       setState(() {
                                         version.isConverted = true;
                                       });
+                                      print('🔧 Convert action: version.id=${version.id} invoiceNumber=${version.invoiceNumber} type=${version.type}');
                                       Navigator.push(
                                         context,
                                         MaterialPageRoute(
                                           builder: (_) => EstimateBuilderScreen(
                                             job: job,
                                             initialItems: version.items,
+                                            initialSubsections: version.sections,
                                             convertToInvoice: true,
+                                            initialSourceType: version.type,
+                                            initialSourceTimestamp: version.timestamp,
+                                            initialDepositAmount: version.depositAmount,
+                                            initialDepositPercentage: version.depositPercentage,
+                                            initialIsDepositPercentage: version.isDepositPercentage,
                                           ),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                  break;
+                                case 'void':
+                                  final confirmVoid = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('Void Document'),
+                                      content: Text(
+                                        'Void this ${version.type}? This will archive it and mark it as voided.',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, false),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () => Navigator.pop(context, true),
+                                          style: TextButton.styleFrom(
+                                            backgroundColor: Colors.red,
+                                            foregroundColor: Colors.white,
+                                          ),
+                                          child: const Text('Void'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirmVoid == true) {
+                                    setState(() {
+                                      version.isArchived = true;
+                                    });
+                                    await FirestoreService.saveJob(job);
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('${version.type?.capitalize() ?? 'Document'} voided'),
                                         ),
                                       );
                                     }
@@ -353,6 +412,15 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
                                     contentPadding: EdgeInsets.zero,
                                   ),
                                 ),
+                              if (!version.isArchived)
+                                const PopupMenuItem(
+                                  value: 'void',
+                                  child: ListTile(
+                                    leading: Icon(Icons.cancel, color: Colors.red),
+                                    title: Text('Void Document', style: TextStyle(color: Colors.red)),
+                                    contentPadding: EdgeInsets.zero,
+                                  ),
+                                ),
                             ],
                           ),
                           onTap: () {
@@ -364,7 +432,7 @@ class _EstimatesQuotesScreenState extends State<EstimatesQuotesScreen> {
                                   priceBook: widget.priceBook,
                                 ),
                               ),
-                            );
+                            ).then((_) => setState(() {}));
                           },
                         ),
                       );

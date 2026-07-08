@@ -13,6 +13,7 @@ class NewJobScreen extends StatefulWidget {
 class _NewJobScreenState extends State<NewJobScreen> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _jobNameController = TextEditingController();
+  final TextEditingController _orderNumberController = TextEditingController();
   Customer? selectedCustomer;
   List<Customer> customers = [];
 
@@ -63,6 +64,7 @@ class _NewJobScreenState extends State<NewJobScreen> {
       'customer': selectedCustomer,
       'customerName': selectedCustomer!.name,
       'customerAddress': selectedCustomer!.address,
+      'orderNumber': _orderNumberController.text.trim(),
     });
   }
 
@@ -97,7 +99,7 @@ class _NewJobScreenState extends State<NewJobScreen> {
                           ),
                     ),
                     const SizedBox(height: 28),
-                    TextFormField(
+                    TextFormField(textCapitalization: TextCapitalization.sentences, 
                       controller: _jobNameController,
                       decoration: const InputDecoration(
                         labelText: 'Job Name',
@@ -106,6 +108,16 @@ class _NewJobScreenState extends State<NewJobScreen> {
                       ),
                       validator: (value) =>
                           value == null || value.isEmpty ? 'Required' : null,
+                    ),
+                    const SizedBox(height: 22),
+                    TextField(textCapitalization: TextCapitalization.sentences, 
+                      controller: _orderNumberController,
+                      decoration: const InputDecoration(
+                        labelText: 'Order Number (Optional)',
+                        prefixIcon: Icon(Icons.confirmation_number),
+                        border: OutlineInputBorder(),
+                        hintText: 'e.g., ORD-2024-001',
+                      ),
                     ),
                     const SizedBox(height: 22),
                     // Customer Selection
@@ -175,5 +187,12 @@ class _NewJobScreenState extends State<NewJobScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _jobNameController.dispose();
+    _orderNumberController.dispose();
+    super.dispose();
   }
 }

@@ -1,8 +1,12 @@
+import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/certificate.dart';
 import '../models/job.dart';
 import '../models/customer.dart';
+import '../models/estimate_version.dart';
 
 class CertificatesScreen extends StatefulWidget {
   final List<Job> jobs;
@@ -26,11 +30,24 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
   String _selectedStatus = 'All';
   String _sortBy = 'Date Created';
   bool _sortAscending = false;
+  DateTime? _fromDate;
+  DateTime? _toDate;
 
   // Available certificate types for filtering
-  final List<String> _certificateTypes = ['All', 'COC', 'ESC', 'ROI', 'Gas COC', 'COF'];
+  final List<String> _certificateTypes = [
+    'All',
+    'COC',
+    'ESC',
+    'ROI',
+  ];
   final List<String> _statuses = ['All', 'Draft', 'Issued', 'Completed'];
-  final List<String> _sortOptions = ['Date Created', 'Date Issued', 'Customer Name', 'Certificate Type', 'Certificate Number'];
+  final List<String> _sortOptions = [
+    'Date Created',
+    'Date Issued',
+    'Customer Name',
+    'Certificate Type',
+    'Certificate Number'
+  ];
 
   @override
   void initState() {
@@ -40,23 +57,38 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant CertificatesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.jobs != widget.jobs) {
+      _loadCertificates();
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
   }
 
-  void _loadCertificates() {
+  Future<void> _loadCertificates() async {
+    final jobsToLoad = await _loadJobsFromLocalIfExists();
+    final jobs = jobsToLoad.isNotEmpty ? jobsToLoad : widget.jobs;
     final certificates = <Certificate>[];
-    
-    for (final job in widget.jobs) {
+    final seenPaths = <String>{};
+    final jobById = {for (final job in jobs) job.id: job};
+
+    for (final job in jobs) {
       // Use job's customer information directly, or try to find matching customer
+      final documentCustomerName = job.documentCustomerName;
       Customer? customer;
       if (job.customerName != null) {
         customer = widget.customers.firstWhere(
           (c) => c.name == job.customerName,
           orElse: () => Customer(
             id: 'job-${job.id}',
-            name: job.customerName ?? 'Unknown Customer',
+            name: documentCustomerName.isNotEmpty
+                ? documentCustomerName
+                : 'Unknown Customer',
             email: job.customerEmail ?? '',
             phone: '',
             address: job.address ?? '',
@@ -64,63 +96,255 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
         );
       } else {
         customer = Customer(
-          id: 'unknown',
-          name: 'Unknown Customer',
-          email: '',
+          id: 'job-${job.id}',
+          name: documentCustomerName.isNotEmpty
+              ? documentCustomerName
+              : 'Unknown Customer',
+          email: job.customerEmail ?? '',
           phone: '',
           address: job.address ?? '',
         );
       }
-      
+
       // Find certificate estimate versions
-      final certificateVersions = job.estimateVersions
-          .where((version) => version.type == 'certificate')
-          .toList();
-      
+      final certificateVersions = job.estimateVersions.where((version) {
+        return _isCertificateVersion(version) ||
+            _extractCertificateTypeFromEstimateVersion(version) != null;
+      }).toList();
+
       for (final version in certificateVersions) {
         certificates.add(Certificate.fromEstimateVersion(
           jobId: job.id,
           jobTitle: job.title,
-          customerName: customer.name,
+          customerName: documentCustomerName.isNotEmpty
+              ? documentCustomerName
+              : customer.name,
           customerAddress: customer.address,
           estimateVersion: version,
         ));
       }
+
+      // Add certificate PDF attachments created from job detail screens
+      for (final attachmentPath in job.attachments ?? []) {
+        if (!attachmentPath.toLowerCase().endsWith('.pdf')) continue;
+        if (!seenPaths.add(attachmentPath)) continue;
+
+        final fileName = attachmentPath.split(RegExp(r'[\\/]+')).last;
+        final certificateType =
+            _extractCertificateTypeFromFileName(fileName) ?? 'Certificate';
+
+        final file = File(attachmentPath);
+        final attachmentExists = await file.exists();
+        final dateCreated =
+            attachmentExists ? await file.lastModified() : DateTime.now();
+
+        certificates.add(Certificate(
+          id: attachmentPath,
+          jobId: job.id,
+          certificateType: certificateType,
+          certificateNumber: fileName.replaceAll(RegExp(r'\.pdf\$', caseSensitive: false), ''),
+          jobTitle: job.title,
+          customerName: documentCustomerName.isNotEmpty
+              ? documentCustomerName
+              : customer.name,
+          customerAddress: customer.address,
+          dateCreated: dateCreated,
+          dateIssued: attachmentExists ? dateCreated : null,
+          filePath: attachmentPath,
+          status: attachmentExists ? 'issued' : 'draft',
+          notes: null,
+        ));
+      }
     }
-    
+
+    // Scan the certificates folder for any saved PDFs that are not explicitly attached to jobs
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final certificateDir = Directory('${directory.path}/certificates');
+      if (await certificateDir.exists()) {
+        for (final entity in certificateDir.listSync()) {
+          if (entity is! File) continue;
+          final path = entity.path;
+          if (!path.toLowerCase().endsWith('.pdf')) continue;
+          if (!seenPaths.add(path)) continue;
+
+          final fileName = path.split(RegExp(r'[\\/]+')).last;
+          final fileType = _extractCertificateTypeFromFileName(fileName);
+          if (fileType == null) continue;
+
+          final jobIdFromFile = _extractJobIdFromCertificateFileName(fileName);
+          final relatedJob = jobIdFromFile != null ? jobById[jobIdFromFile] : null;
+          Customer customer;
+          if (relatedJob != null && relatedJob.customerName != null) {
+            final job = relatedJob;
+            customer = widget.customers.firstWhere(
+              (c) => c.name == job.customerName,
+              orElse: () => Customer(
+                id: 'job-${job.id}',
+                name: job.documentCustomerName.isNotEmpty
+                    ? job.documentCustomerName
+                    : 'Unknown Customer',
+                email: job.customerEmail ?? '',
+                phone: '',
+                address: job.address ?? '',
+              ),
+            );
+          } else {
+            customer = Customer(
+              id: relatedJob != null ? 'job-${relatedJob.id}' : 'unknown',
+              name: relatedJob?.documentCustomerName.isNotEmpty == true
+                  ? relatedJob!.documentCustomerName
+                  : 'Unknown Customer',
+              email: '',
+              phone: '',
+              address: relatedJob?.address ?? '',
+            );
+          }
+
+          final file = File(path);
+          final attachmentExists = await file.exists();
+          final dateCreated =
+              attachmentExists ? await file.lastModified() : DateTime.now();
+
+          certificates.add(Certificate(
+            id: path,
+            jobId: relatedJob?.id ?? 'unknown',
+            certificateType: fileType,
+            certificateNumber: fileName.replaceAll(RegExp(r'\.pdf\$', caseSensitive: false), ''),
+            jobTitle: relatedJob?.title ?? 'Unknown Job',
+            customerName: relatedJob?.documentCustomerName.isNotEmpty == true
+                ? relatedJob!.documentCustomerName
+                : customer.name,
+            customerAddress: customer.address,
+            dateCreated: dateCreated,
+            dateIssued: attachmentExists ? dateCreated : null,
+            filePath: path,
+            status: attachmentExists ? 'issued' : 'draft',
+            notes: null,
+          ));
+        }
+      }
+    } catch (e) {
+      // Ignore scanning errors, certificates from attachments are still included.
+    }
+
     setState(() {
       _allCertificates = certificates;
       _filterCertificates();
     });
   }
 
+  String? _extractCertificateTypeFromFileName(String fileName) {
+    final lower = fileName.toLowerCase();
+    if (lower.contains('gas coc') || (lower.contains('gas') && lower.contains('coc'))) {
+      return 'COC';
+    }
+    if (lower.contains('electrical safety certificate') ||
+        lower.contains('electrical safety cert') ||
+        lower.contains('esc')) {
+      return 'ESC';
+    }
+    if (lower.contains('certificate of compliance') ||
+        lower.contains('compliance certificate') ||
+        lower.contains('coc')) {
+      return 'COC';
+    }
+    if (lower.contains('record of inspection') || lower.contains('roi')) {
+      return 'ROI';
+    }
+    return null;
+  }
+
+  bool _isCertificateVersion(EstimateVersion version) {
+    final type = version.type?.toLowerCase() ?? '';
+    if (type.contains('esc') ||
+        type.contains('roi') ||
+        type.contains('coc') ||
+        ((type.contains('gas') || type.contains('gas_coc')) && type.contains('coc'))) {
+      return true;
+    }
+    if (version.filePath != null) {
+      final fileName =
+          version.filePath!.split(RegExp(r'[\\/]+')).last.toLowerCase();
+      return _extractCertificateTypeFromFileName(fileName) != null;
+    }
+    return false;
+  }
+
+  String? _extractCertificateTypeFromEstimateVersion(EstimateVersion version) {
+    final type = version.type?.toLowerCase();
+    if (type != null) {
+      if (type.contains('gas coc') || type.contains('gas_coc') || (type.contains('gas') && type.contains('coc'))) {
+        return 'COC';
+      }
+      if (type.contains('electrical safety') || type.contains('esc')) {
+        return 'ESC';
+      }
+      if (type.contains('certificate of compliance') || type.contains('coc')) {
+        return 'COC';
+      }
+      if (type.contains('record of inspection') || type.contains('roi')) {
+        return 'ROI';
+      }
+    }
+
+    if (version.filePath != null) {
+      final fileName = version.filePath!.split(RegExp(r'[\\/]+')).last;
+      return _extractCertificateTypeFromFileName(fileName);
+    }
+
+    final invoiceNumber = version.invoiceNumber?.toLowerCase();
+    if (invoiceNumber != null) {
+      if (invoiceNumber.contains('coc') || (invoiceNumber.contains('gas') && invoiceNumber.contains('coc'))) return 'COC';
+      if (invoiceNumber.contains('esc')) return 'ESC';
+      if (invoiceNumber.contains('roi')) return 'ROI';
+    }
+    return null;
+  }
+
   void _filterCertificates() {
     final query = _searchController.text.toLowerCase();
-    
+
     List<Certificate> filtered = _allCertificates.where((cert) {
       // Text search
+      final createdDate = _formatDate(cert.dateCreated).toLowerCase();
+      final issuedDate = cert.dateIssued != null
+          ? _formatDate(cert.dateIssued!).toLowerCase()
+          : '';
       final matchesSearch = query.isEmpty ||
           cert.customerName.toLowerCase().contains(query) ||
           cert.customerAddress.toLowerCase().contains(query) ||
           cert.jobTitle.toLowerCase().contains(query) ||
           cert.certificateNumber.toLowerCase().contains(query) ||
-          cert.certificateType.toLowerCase().contains(query);
-      
+          cert.certificateType.toLowerCase().contains(query) ||
+          (cert.filePath != null
+              ? cert.filePath!
+                  .split(RegExp(r'[\\/]+'))
+                  .last
+                  .toLowerCase()
+                  .contains(query)
+              : false) ||
+          createdDate.contains(query) ||
+          issuedDate.contains(query);
+
       // Certificate type filter
       final matchesType = _selectedCertificateType == 'All' ||
           cert.certificateType == _selectedCertificateType;
-      
+
       // Status filter
-      final matchesStatus = _selectedStatus == 'All' ||
-          cert.statusDisplayName == _selectedStatus;
-      
-      return matchesSearch && matchesType && matchesStatus;
+      final matchesStatus =
+          _selectedStatus == 'All' || cert.statusDisplayName == _selectedStatus;
+
+      final matchesDateRange = (_fromDate == null || !cert.dateCreated.isBefore(_fromDate!)) &&
+          (_toDate == null || !cert.dateCreated.isAfter(_toDate!));
+
+      return matchesSearch && matchesType && matchesStatus && matchesDateRange;
     }).toList();
-    
+
     // Sort results
     filtered.sort((a, b) {
       int comparison = 0;
-      
+
       switch (_sortBy) {
         case 'Date Created':
           comparison = a.dateCreated.compareTo(b.dateCreated);
@@ -140,10 +364,10 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
           comparison = a.certificateNumber.compareTo(b.certificateNumber);
           break;
       }
-      
+
       return _sortAscending ? comparison : -comparison;
     });
-    
+
     setState(() {
       _filteredCertificates = filtered;
     });
@@ -185,15 +409,18 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              _buildDetailRow('Certificate Number', certificate.certificateNumber),
+              _buildDetailRow(
+                  'Certificate Number', certificate.certificateNumber),
               _buildDetailRow('Type', certificate.certificateType),
               _buildDetailRow('Status', certificate.statusDisplayName),
               _buildDetailRow('Job Title', certificate.jobTitle),
               _buildDetailRow('Customer', certificate.customerName),
               _buildDetailRow('Address', certificate.customerAddress),
-              _buildDetailRow('Date Created', _formatDate(certificate.dateCreated)),
+              _buildDetailRow(
+                  'Date Created', _formatDate(certificate.dateCreated)),
               if (certificate.dateIssued != null)
-                _buildDetailRow('Date Issued', _formatDate(certificate.dateIssued!)),
+                _buildDetailRow(
+                    'Date Issued', _formatDate(certificate.dateIssued!)),
               if (certificate.notes != null && certificate.notes!.isNotEmpty)
                 _buildDetailRow('Notes', certificate.notes!),
             ],
@@ -239,6 +466,45 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
     );
   }
 
+
+  Future<void> _selectFromDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _fromDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null) {
+      setState(() {
+        _fromDate = picked;
+        _filterCertificates();
+      });
+    }
+  }
+
+  Future<void> _selectToDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _toDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null) {
+      setState(() {
+        _toDate = picked;
+        _filterCertificates();
+      });
+    }
+  }
+
+  void _clearDateRange() {
+    setState(() {
+      _fromDate = null;
+      _toDate = null;
+      _filterCertificates();
+    });
+  }
+
   String _formatDate(DateTime date) {
     return '${date.day}/${date.month}/${date.year}';
   }
@@ -268,9 +534,11 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
               children: [
                 // Search Bar
                 TextField(
+                  textCapitalization: TextCapitalization.sentences,
                   controller: _searchController,
                   decoration: InputDecoration(
-                    hintText: 'Search by customer, address, job title, or certificate number...',
+                    hintText:
+                        'Search by customer, address, job title, certificate number, or date...',
                     prefixIcon: const Icon(Icons.search),
                     suffixIcon: _searchController.text.isNotEmpty
                         ? IconButton(
@@ -288,7 +556,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                
+
                 // Filter Row
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -305,7 +573,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                         }),
                       ),
                       const SizedBox(width: 12),
-                      
+
                       // Status Filter
                       _buildFilterDropdown(
                         'Status',
@@ -317,7 +585,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                         }),
                       ),
                       const SizedBox(width: 12),
-                      
+
                       // Sort By
                       _buildFilterDropdown(
                         'Sort by',
@@ -329,26 +597,60 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                         }),
                       ),
                       const SizedBox(width: 8),
-                      
+
                       // Sort Direction
                       IconButton(
                         icon: Icon(
-                          _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+                          _sortAscending
+                              ? Icons.arrow_upward
+                              : Icons.arrow_downward,
                           color: Colors.indigo.shade700,
                         ),
                         onPressed: () => setState(() {
                           _sortAscending = !_sortAscending;
                           _filterCertificates();
                         }),
-                        tooltip: _sortAscending ? 'Sort Ascending' : 'Sort Descending',
+                        tooltip: _sortAscending
+                            ? 'Sort Ascending'
+                            : 'Sort Descending',
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.date_range),
+                        label: Text(_fromDate == null
+                            ? 'From Date'
+                            : 'From: ${_formatDate(_fromDate!)}'),
+                        onPressed: _selectFromDate,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.date_range),
+                        label: Text(_toDate == null
+                            ? 'To Date'
+                            : 'To: ${_formatDate(_toDate!)}'),
+                        onPressed: _selectToDate,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.clear),
+                      label: const Text('Clear'),
+                      onPressed: _clearDateRange,
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
-          
+
           // Results Count
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -366,7 +668,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
               ],
             ),
           ),
-          
+
           // Certificates List
           Expanded(
             child: _filteredCertificates.isEmpty
@@ -465,7 +767,8 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                 children: [
                   // Certificate Type Badge
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
                       color: Colors.indigo.shade100,
                       borderRadius: BorderRadius.circular(6),
@@ -480,12 +783,13 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  
+
                   // Status Badge
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: certificate.statusColor.withOpacity(0.1),
+                      color: certificate.statusColor.withAlpha((0.1 * 255).round()),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
@@ -497,21 +801,25 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                       ),
                     ),
                   ),
-                  
+
                   const Spacer(),
-                  
+
                   // PDF indicator
                   if (certificate.hasPdf)
-                    Icon(
-                      Icons.picture_as_pdf,
-                      color: Colors.red.shade600,
-                      size: 20,
+                    IconButton(
+                      icon: Icon(
+                        Icons.picture_as_pdf,
+                        color: Colors.red.shade600,
+                        size: 20,
+                      ),
+                      onPressed: () => _openCertificate(certificate),
+                      tooltip: 'Open PDF',
                     ),
                 ],
               ),
-              
+
               const SizedBox(height: 12),
-              
+
               // Certificate Number
               Text(
                 certificate.certificateNumber,
@@ -520,9 +828,9 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                   fontSize: 16,
                 ),
               ),
-              
+
               const SizedBox(height: 8),
-              
+
               // Customer and Job Info
               Row(
                 children: [
@@ -539,9 +847,9 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 4),
-              
+
               Row(
                 children: [
                   Icon(Icons.work, size: 16, color: Colors.grey.shade600),
@@ -554,12 +862,13 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 4),
-              
+
               Row(
                 children: [
-                  Icon(Icons.location_on, size: 16, color: Colors.grey.shade600),
+                  Icon(Icons.location_on,
+                      size: 16, color: Colors.grey.shade600),
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
@@ -569,9 +878,9 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 12),
-              
+
               // Dates Row
               Row(
                 children: [
@@ -593,7 +902,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                       ],
                     ),
                   ),
-                  
+
                   if (certificate.dateIssued != null)
                     Expanded(
                       child: Column(
@@ -613,7 +922,7 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                         ],
                       ),
                     ),
-                  
+
                   // Action Button
                   if (certificate.hasPdf)
                     ElevatedButton.icon(
@@ -622,7 +931,8 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.indigo.shade700,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
                         textStyle: const TextStyle(fontSize: 12),
                       ),
                       onPressed: () => _openCertificate(certificate),
@@ -634,5 +944,28 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
         ),
       ),
     );
+  }
+
+  Future<List<Job>> _loadJobsFromLocalIfExists() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/jobs.json');
+      if (await file.exists()) {
+        final jsonString = await file.readAsString();
+        final List<dynamic> jsonList = json.decode(jsonString);
+        return jsonList.map((json) => Job.fromJson(json)).toList();
+      }
+    } catch (e) {
+      // Handle error (e.g., log it)
+    }
+    return [];
+  }
+
+  String? _extractJobIdFromCertificateFileName(String fileName) {
+    final lower = fileName.toLowerCase();
+    final regex = RegExp(
+        r'^(.*)_(?:gas_coc|gas coc|esc|roi|cof|coc|certificate)_certificate_.*\.pdf$');
+    final match = regex.firstMatch(lower);
+    return match?.group(1);
   }
 }

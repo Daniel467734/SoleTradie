@@ -88,7 +88,7 @@ Future<Customer?> showAddCustomerDialog(BuildContext context) async {
           content: SingleChildScrollView(
             child: Column(
               children: [
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: pasteController,
                   decoration: InputDecoration(
                     labelText: 'Paste customer details (optional)',
@@ -113,33 +113,33 @@ Future<Customer?> showAddCustomerDialog(BuildContext context) async {
                   },
                 ),
                 const Divider(),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: firstNameController,
                   decoration: const InputDecoration(labelText: 'First Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: lastNameController,
                   decoration: const InputDecoration(labelText: 'Last Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: companyNameController,
                   decoration: const InputDecoration(labelText: 'Company Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
                   decoration: const InputDecoration(labelText: 'Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: emailController,
                   decoration: const InputDecoration(labelText: 'Email Address'),
                   keyboardType: TextInputType.emailAddress,
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: phoneController,
                   decoration: const InputDecoration(labelText: 'Phone Number'),
                   keyboardType: TextInputType.phone,
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: paymentTermsController,
                   decoration: const InputDecoration(labelText: 'Payment Terms'),
                 ),

@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'pricebook_screen.dart' show PriceBookItem;
+import 'pricebook_extensive_screen.dart' show PriceBookItem;
 
 class TimelineCalendarScreen extends StatefulWidget {
   final Map<String, dynamic>? targetEstimate;

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'lib/services/gps_service.dart';
-import 'lib/screens/pricebook_screen.dart'; // For PriceBookItem
+import 'lib/screens/pricebook_extensive_screen.dart'; // For PriceBookItem
 
 /// Demo app to test GPS service functionality
 class GpsServiceDemo extends StatelessWidget {

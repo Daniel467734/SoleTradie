@@ -17,6 +17,14 @@ void callbackDispatcher() {
 
 class NotificationService {
   static const String _overdueCheckKey = 'overdue_check_task';
+  static const String _lastDailyNotificationDateKey = 'last_overdue_notification_date';
+
+  static bool _shouldRunDailyNotification(DateTime now, String? lastRunDate) {
+    if (now.hour < 9) return false;
+    final todayKey = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    return lastRunDate != todayKey;
+  }
+
   
   /// Initialize the notification service and background tasks
   static Future<void> initialize() async {
@@ -42,10 +50,15 @@ class NotificationService {
   static Future<void> _checkOverdueInvoicesBackground() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now();
+      final lastRunDate = prefs.getString(_lastDailyNotificationDateKey);
+      final todayKey = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      if (!_shouldRunDailyNotification(now, lastRunDate)) {
+        return;
+      }
       
       // Get stored invoice data (you may need to adapt this based on your data storage)
       final jobsJson = prefs.getStringList('cached_jobs') ?? [];
-      final now = DateTime.now();
       
       for (final jobJson in jobsJson) {
         // Parse job data and check for overdue invoices
@@ -84,6 +97,7 @@ class NotificationService {
           continue;
         }
       }
+    await prefs.setString(_lastDailyNotificationDateKey, todayKey);
     } catch (e) {
       // Background task failed - will retry on next scheduled run
     }

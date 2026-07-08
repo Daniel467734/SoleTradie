@@ -41,7 +41,7 @@ class _EnhancedTemplatePickerDialogState extends State<EnhancedTemplatePickerDia
         child: Column(
           children: [
             if (showAll) ...[
-              TextField(
+              TextField(textCapitalization: TextCapitalization.sentences, 
                 decoration: const InputDecoration(
                   labelText: 'Search templates',
                   prefixIcon: Icon(Icons.search),

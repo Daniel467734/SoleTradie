@@ -1,24 +1,54 @@
+class InvoicePayment {
+  final double amount;
+  final DateTime date;
+  final String? note;
+
+  InvoicePayment({
+    required this.amount,
+    required this.date,
+    this.note,
+  });
+
+  factory InvoicePayment.fromJson(Map<String, dynamic> json) => InvoicePayment(
+        amount: (json['amount'] ?? 0).toDouble(),
+        date: DateTime.parse(json['date'] as String),
+        note: json['note'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'amount': amount,
+        'date': date.toIso8601String(),
+        'note': note,
+      };
+}
+
 // Define the Invoice class if it does not exist
 class Invoice {
   // Add an id field to uniquely identify each invoice
   final String id;
   final double total;
   final double amount; // Add amount property for compatibility
-  final bool isPaid;
-  final DateTime? dueDate;
+  final double amountPaid;
+  final List<InvoicePayment> payments;
+  bool isPaid;
+  DateTime? dueDate;
   // Add other fields as needed
   final String customerId;
   final String customerName;
   final String status; // e.g. 'unpaid', 'sent', 'paid'
   bool emailSent; // <-- Add this line
-  final bool isArchived; // Add this for compatibility
+  bool isArchived; // Add this for compatibility
   final String? filePath; // Add filePath property for PDF storage
+
+  double get balance => (total - amountPaid).clamp(0.0, double.infinity);
 
   Invoice({
     required this.id,
     required this.total,
     double? amount,
-    required this.isPaid,
+    this.amountPaid = 0.0,
+    List<InvoicePayment>? payments,
+    this.isPaid = false,
     this.dueDate,
     // Add other fields as needed
     required this.customerId,
@@ -27,12 +57,15 @@ class Invoice {
     this.emailSent = false, // <-- Add this default
     this.isArchived = false, // <-- Add this default
     this.filePath, // Add filePath parameter
-  }) : amount = amount ?? total;
+  })  : amount = amount ?? total,
+        payments = payments ?? [];
 
   Invoice copyWith({
     String? id,
     double? total,
     double? amount,
+    double? amountPaid,
+    List<InvoicePayment>? payments,
     bool? isPaid,
     DateTime? dueDate,
     // Add other fields as needed
@@ -47,6 +80,8 @@ class Invoice {
       id: id ?? this.id,
       total: total ?? this.total,
       amount: amount ?? this.amount,
+      amountPaid: amountPaid ?? this.amountPaid,
+      payments: payments ?? this.payments,
       isPaid: isPaid ?? this.isPaid,
       dueDate: dueDate ?? this.dueDate,
       // Add other fields as needed
@@ -59,11 +94,26 @@ class Invoice {
     );
   }
 
+  Invoice addPayment(InvoicePayment payment) {
+    final updatedAmountPaid = (amountPaid + payment.amount).clamp(0.0, amount);
+    return copyWith(
+      amountPaid: updatedAmountPaid,
+      payments: [...payments, payment],
+      isPaid: updatedAmountPaid >= amount,
+      status: updatedAmountPaid >= amount ? 'paid' : status,
+    );
+  }
+
   // Update fromJson/toJson if needed:
   factory Invoice.fromJson(Map<String, dynamic> json) => Invoice(
         id: json['id'],
         total: (json['total'] ?? 0).toDouble(),
         amount: (json['amount'] ?? json['total'] ?? 0).toDouble(),
+        amountPaid: (json['amountPaid'] ?? 0).toDouble(),
+        payments: (json['payments'] as List<dynamic>?)
+                ?.map((item) => InvoicePayment.fromJson(item as Map<String, dynamic>))
+                .toList() ??
+            [],
         isPaid: json['isPaid'] ?? false,
         dueDate: json['dueDate'] != null ? DateTime.tryParse(json['dueDate']) : null,
         customerId: json['customerId'] ?? '',
@@ -78,6 +128,8 @@ class Invoice {
         'id': id,
         'total': total,
         'amount': amount,
+        'amountPaid': amountPaid,
+        'payments': payments.map((item) => item.toJson()).toList(),
         'isPaid': isPaid,
         'dueDate': dueDate?.toIso8601String(),
         'customerId': customerId,

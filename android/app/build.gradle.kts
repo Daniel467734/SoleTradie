@@ -8,22 +8,23 @@ plugins {
 android {
     namespace = "com.example.app"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.example.app"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildTypes {
@@ -38,12 +39,6 @@ flutter {
 }
 
 dependencies {
-    // Import the Firebase BoM
     implementation(platform("com.google.firebase:firebase-bom:34.2.0"))
-
-    // Example: Add Firebase Analytics (remove if not needed)
     implementation("com.google.firebase:firebase-analytics")
-
-    // Add other Firebase dependencies as needed
-    // https://firebase.google.com/docs/android/setup#available-libraries
 }

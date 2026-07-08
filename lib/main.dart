@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -6,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'screens/dashboard_screen.dart';
+import 'route_observer.dart';
 import 'screens/jobs_screen.dart';
 import 'screens/customers_screen.dart';
 import 'screens/reports_screen.dart';
@@ -21,45 +23,171 @@ import 'services/sync_scheduler.dart';
 import 'services/storage_strategy_service.dart'; // For DataType enum
 import 'services/firebase_integration_service.dart';
 import 'services/service_locator.dart';
+import 'screens/scheduling_screen.dart';
 
-import 'screens/pricebook_screen.dart' as pb;
+import 'screens/pricebook_extensive_screen.dart' as pb;
 import 'screens/customer_form_screen.dart';
 import 'models/customer.dart';
 import 'models/job.dart';
 import 'models/estimate_version.dart';
 
 Future<List<pb.PriceBookItem>> loadPriceBook() async {
-  // Try to load from Firebase first if user is authenticated
-  if (FirebaseAuth.instance.currentUser != null) {
-    try {
-      await FirestoreService.initialize(); // Ensure Firestore is initialized with tenant support
-      final firestoreItems = await FirestoreService.getPriceBookItems(limit: 100);
-      if (firestoreItems.isNotEmpty) {
-        print('✅ Loaded ${firestoreItems.length} price book items from Firebase');
-        return firestoreItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
+  try {
+    print('📚 Loading pricebook using hybrid approach...');
+    
+    // Try local storage first (fastest)
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/price_book.json');
+    
+    print('📁 Looking for file at: ${file.path}');
+    
+    if (await file.exists()) {
+      try {
+        final jsonString = await file.readAsString();
+        final fileSize = await file.length();
+        
+        print('📄 File found: size=${fileSize} bytes');
+        
+        if (jsonString.trim().isNotEmpty) {
+          final jsonData = jsonDecode(jsonString);
+          
+          // Handle both old format (direct list) and new format (with metadata)
+          final List<dynamic> itemsList;
+          if (jsonData is Map && jsonData.containsKey('items')) {
+            itemsList = jsonData['items'] as List<dynamic>;
+            print('📦 Found ${itemsList.length} items in metadata format');
+          } else {
+            itemsList = jsonData as List<dynamic>;
+            print('📦 Found ${itemsList.length} items in direct format');
+          }
+          
+          final items = itemsList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
+          print('✅ Successfully loaded ${items.length} items from local storage');
+          
+          // Show brief loading feedback
+          if (items.isNotEmpty) {
+            // Try background cloud sync (non-blocking)
+            _backgroundCloudSync().catchError((e) {
+              print('Background sync failed: $e');
+            });
+          }
+          
+          return items;
+        } else {
+          print('📄 File exists but is empty');
+        }
+      } catch (e) {
+        print('❌ Error parsing local data: $e');
+        // Don't delete the file, just try other sources
       }
-    } catch (e) {
-      print('❌ Error loading price book from Firebase: $e');
+    } else {
+      print('📄 No local file found');
     }
+    
+    // Try Firebase if local is empty and user is authenticated
+    if (FirebaseAuth.instance.currentUser != null) {
+      try {
+        print('☁️ Trying to load from Firebase...');
+        await FirestoreService.initialize();
+        final firestoreItems = await FirestoreService.getPriceBookItems(limit: 1000);
+        
+        if (firestoreItems.isNotEmpty) {
+          final items = firestoreItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
+          print('☁️ Loaded ${items.length} items from cloud');
+          
+          // Save to local for next time
+          _saveToLocal(items).then((_) {
+            print('💾 Cloud data cached locally');
+          }).catchError((e) {
+            print('Local caching failed: $e');
+            return null;
+          });
+          
+          return items;
+        } else {
+          print('☁️ No items found in cloud');
+        }
+      } catch (e) {
+        print('❌ Cloud loading failed: $e');
+      }
+    } else {
+      print('👤 User not authenticated - skipping cloud');
+    }
+    
+    // Return sample items as fallback
+    final samples = _createSampleItems();
+    print('🔧 Created ${samples.length} sample items as fallback');
+    
+    // Save sample items locally
+    _saveToLocal(samples).catchError((e) {
+      print('Failed to save samples: $e');
+      return null;
+    });
+    
+    return samples;
+    
+  } catch (e) {
+    print('❌ Error loading pricebook: $e');
+    return _createSampleItems();
   }
+}
+
+Future<void> _backgroundCloudSync() async {
+  if (FirebaseAuth.instance.currentUser == null) return;
   
-  // Fall back to local storage or create sample data
+  try {
+    await FirestoreService.initialize();
+    final cloudItems = await FirestoreService.getPriceBookItems(limit: 1000);
+    if (cloudItems.isNotEmpty) {
+      final items = cloudItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
+      await _saveToLocal(items);
+      print('🔄 Background sync completed: ${items.length} items');
+    }
+  } catch (e) {
+    print('Background sync error: $e');
+  }
+}
+
+Future<void> _saveToLocal(List<pb.PriceBookItem> items) async {
   try {
     final directory = await getApplicationDocumentsDirectory();
     final file = File('${directory.path}/price_book.json');
-    if (await file.exists()) {
-      final jsonString = await file.readAsString();
-      final List<dynamic> jsonList = jsonDecode(jsonString);
-      final items = jsonList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
-      print('📱 Loaded ${items.length} price book items from local storage');
-      return items;
+    
+    print('📁 Saving to: ${file.path}');
+    
+    // Create directory if it doesn't exist
+    if (!await directory.exists()) {
+      await directory.create(recursive: true);
     }
+    
+    final data = {
+      'items': items.map((item) => item.toJson()).toList(),
+      'lastSaved': DateTime.now().toIso8601String(),
+      'version': 1,
+      'totalItems': items.length,
+    };
+    
+    final jsonString = jsonEncode(data);
+    await file.writeAsString(jsonString);
+    
+    // Verify the file was written
+    final fileExists = await file.exists();
+    final fileSize = await file.length();
+    
+    print('✅ File saved: exists=$fileExists, size=${fileSize} bytes');
+    
+    if (!fileExists || fileSize == 0) {
+      throw Exception('File was not saved correctly');
+    }
+    
   } catch (e) {
-    print('❌ Error loading price book from local storage: $e');
+    print('❌ Error saving to local: $e');
+    rethrow;
   }
-  
-  // Create sample price book items if none found
-  final sampleItems = [
+}
+
+List<pb.PriceBookItem> _createSampleItems() {
+  return [
     pb.PriceBookItem(
       code: 'CAL',
       name: 'Labour',
@@ -86,14 +214,62 @@ Future<List<pb.PriceBookItem>> loadPriceBook() async {
       purchasePrice: 18.0,
     ),
   ];
-  
-  print('🔧 Created sample price book with ${sampleItems.length} items');
-  return sampleItems;
 }
 
-void main() async {
+Future<void> _logUncaughtError(String source, Object error, StackTrace? stack) async {
+  final timestamp = DateTime.now().toIso8601String();
+  final formatted = '''[$timestamp] $source error:\n$error\n${stack ?? ''}\n''';
+  print(formatted);
+  await _logMemoryStatus('error');
+  try {
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/uncaught_errors.log');
+    await file.writeAsString(formatted, mode: FileMode.append, flush: true);
+  } catch (e) {
+    print('Failed to write uncaught error log: $e');
+  }
+}
+
+Future<void> _logMemoryStatus([String? context]) async {
+  final summary = MemoryOptimizationService.getMemorySummary();
+  final timestamp = DateTime.now().toIso8601String();
+  final buffer = StringBuffer()
+    ..writeln('[$timestamp] Memory status${context != null ? ' ($context)' : ''}:');
+  summary.forEach((key, value) => buffer.writeln('  $key: $value'));
+  buffer.writeln();
+  final formatted = buffer.toString();
+
+  print(formatted);
+  try {
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/memory_status.log');
+    await file.writeAsString(formatted, mode: FileMode.append, flush: true);
+  } catch (e) {
+    print('Failed to write memory status log: $e');
+  }
+}
+
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  FlutterError.onError = (details) {
+    FlutterError.dumpErrorToConsole(details, forceReport: true);
+    _logUncaughtError('FlutterError', details.exception, details.stack);
+  };
+
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    _logUncaughtError('PlatformDispatcher', error, stack);
+    return true;
+  };
+
+  runZonedGuarded(() async {
+    await _runApp();
+  }, (error, stack) async {
+    await _logUncaughtError('Zone', error, stack);
+  });
+}
+
+Future<void> _runApp() async {
   // Initialize Firebase
   try {
     await Firebase.initializeApp();
@@ -156,7 +332,8 @@ void main() async {
     print('Services initialization error: $e\n$st');
     // Continue with basic functionality
   }
-  
+
+  await _logMemoryStatus('startup');
   runApp(MyApp(
     initialPriceBook: priceBook,
     initialCustomers: testCustomers,
@@ -180,7 +357,8 @@ class _MyAppState extends State<MyApp> {
   late List<pb.PriceBookItem> priceBook;
   List<Customer> customers = [];
   List<Job> jobs = [];
-  Color _appColor = const Color(0xFF2196F3); // Default blue
+  Color _appColor = const Color(0xFF2196F3); // Default blue (primary)
+  Color _accentColor = const Color(0xFF4CAF50); // Default green (secondary/accent, used app-wide for highlights)
 
   @override
   void initState() {
@@ -257,6 +435,12 @@ class _MyAppState extends State<MyApp> {
     if (appColorString != null && appColorString.length == 9) {
       setState(() {
         _appColor = Color(int.parse(appColorString.substring(1), radix: 16));
+      });
+    }
+    final accentColorString = prefs.getString('accent_color');
+    if (accentColorString != null && accentColorString.length == 9) {
+      setState(() {
+        _accentColor = Color(int.parse(accentColorString.substring(1), radix: 16));
       });
     }
   }
@@ -380,14 +564,140 @@ class _MyAppState extends State<MyApp> {
   }
 
   void updatePriceBook(List<pb.PriceBookItem> updatedList) {
+    print('🔄 updatePriceBook called with ${updatedList.length} items');
+    print('📊 Previous pricebook had ${priceBook.length} items');
+    
     setState(() {
       priceBook = updatedList;
     });
     
-    // Save using Firebase integration service
-    FirebaseIntegrationService.savePriceBook(updatedList).catchError((e) {
-      print('❌ Error saving price book: $e');
+    print('💾 State updated, now starting save process...');
+    
+    // ALWAYS save locally first (immediate and blocking to ensure it completes)
+    _saveToLocal(updatedList).then((_) {
+      print('✅ Pricebook saved locally - SUCCESS');
+      
+      // Verify it was actually saved by checking the state
+      print('🔍 App state now has ${priceBook.length} items');
+      
+      // Show immediate success feedback
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('💾 Saved ${updatedList.length} items locally'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      
+      // Try to save to cloud in background (non-blocking)
+      if (FirebaseAuth.instance.currentUser != null) {
+        _saveToCloudBackground(updatedList).then((_) {
+          // Cloud sync succeeded
+          print('☁️ Cloud sync also succeeded');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('☁️ Also synced to cloud'),
+              backgroundColor: Colors.blue,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }).catchError((e) {
+          print('❌ Cloud save failed (will retry later): $e');
+          // Show that local succeeded but cloud failed
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ Saved locally, cloud sync failed'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        });
+      } else {
+        // User not authenticated
+        print('👤 User not signed in for cloud sync');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('💾 Saved locally (not signed in)'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }).catchError((e) {
+      print('❌ CRITICAL ERROR - Local save failed: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Save failed: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
     });
+  }
+  
+  // Add this method to provide manual sync capability
+  Future<bool> forceSyncPriceBookToCloud() async {
+    if (FirebaseAuth.instance.currentUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('❌ Cannot sync - please sign in first'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return false;
+    }
+
+    try {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('🔄 Syncing to cloud...'),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 1),
+        ),
+      );
+
+      await FirebaseIntegrationService.savePriceBook(priceBook);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ Successfully synced to cloud'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      
+      return true;
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Sync failed: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return false;
+    }
+  }
+
+  Future<void> _saveToCloudBackground(List<pb.PriceBookItem> items) async {
+    try {
+      // Use the existing FirebaseIntegrationService which handles the conversion
+      await FirebaseIntegrationService.savePriceBook(items);
+      print('☁️ Cloud save completed successfully');
+      
+      // Show success feedback
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('☁️ Synced to cloud successfully'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      print('Cloud save error: $e');
+      rethrow; // Let the calling method handle it
+    }
   }
 
   void _createSampleData() {
@@ -532,6 +842,137 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
+  // Static method to get pricebook from anywhere in the app
+  static Future<List<pb.PriceBookItem>> getPriceBookForApp() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/price_book.json');
+      
+      if (await file.exists()) {
+        final jsonString = await file.readAsString();
+        if (jsonString.trim().isNotEmpty) {
+          final jsonData = jsonDecode(jsonString);
+          
+          final List<dynamic> itemsList;
+          if (jsonData is Map && jsonData.containsKey('items')) {
+            itemsList = jsonData['items'] as List<dynamic>;
+          } else {
+            itemsList = jsonData as List<dynamic>;
+          }
+          
+          final items = itemsList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
+          print('📚 Loaded ${items.length} items from shared local storage');
+          return items;
+        }
+      }
+      
+      print('📄 No local pricebook file found');
+      return [];
+    } catch (e) {
+      print('❌ Error loading shared pricebook: $e');
+      return [];
+    }
+  }
+  Future<void> testLocalStorage() async {
+    try {
+      print('🧪 Testing local storage...');
+      
+      // Create test items
+      final testItems = [
+        pb.PriceBookItem(
+          code: 'TEST1',
+          name: 'Test Item 1',
+          unit: 'each',
+          groupCode: 'TEST',
+          price: 99.99,
+          purchasePrice: 50.0,
+        ),
+        pb.PriceBookItem(
+          code: 'TEST2', 
+          name: 'Test Item 2',
+          unit: 'each',
+          groupCode: 'TEST',
+          price: 199.99,
+          purchasePrice: 100.0,
+        ),
+      ];
+      
+      // Save test items
+      await _saveToLocal(testItems);
+      print('✅ Test items saved');
+      
+      // Load them back
+      final loadedItems = await loadPriceBook();
+      print('📚 Loaded back ${loadedItems.length} items');
+      
+      // Verify content
+      bool foundTest1 = loadedItems.any((item) => item.code == 'TEST1');
+      bool foundTest2 = loadedItems.any((item) => item.code == 'TEST2');
+      
+      print('🔍 Found TEST1: $foundTest1, Found TEST2: $foundTest2');
+      
+      if (foundTest1 && foundTest2) {
+        print('✅ Local storage test PASSED');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Local storage test PASSED'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        print('❌ Local storage test FAILED');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ Local storage test FAILED'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      
+    } catch (e) {
+      print('❌ Test error: $e');
+    }
+  }
+
+  /// Refresh app data from cloud and storage
+  Future<void> _refreshAppData() async {
+    try {
+      // Reload theme colours in case they were changed in Settings
+      await _loadAppColor();
+
+      if (FirebaseAuth.instance.currentUser != null) {
+        await FirebaseIntegrationService.initializeForUser();
+      }
+
+      final futures = <Future>[];
+      futures.add(FirebaseIntegrationService.loadCustomers().then((loadedCustomers) {
+        if (mounted) {
+          setState(() {
+            customers = loadedCustomers;
+          });
+        }
+      }));
+      futures.add(FirebaseIntegrationService.loadJobs().then((loadedJobs) {
+        if (mounted) {
+          setState(() {
+            jobs = loadedJobs;
+          });
+        }
+      }));
+      futures.add(FirebaseIntegrationService.loadPriceBook().then((loadedPriceBook) {
+        if (mounted) {
+          setState(() {
+            priceBook = loadedPriceBook;
+          });
+        }
+      }));
+
+      await Future.wait(futures);
+    } catch (e) {
+      print('❌ Error refreshing app data: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -560,9 +1001,18 @@ class _MyAppState extends State<MyApp> {
           700: _appColor.withOpacity(0.8),
           800: _appColor.withOpacity(0.9),
           900: _appColor.withOpacity(1.0),
-        })),
+        })).copyWith(
+          // App-wide selectable accent/secondary colour (defaults to green).
+          // Anywhere `colorScheme.secondary` is used (e.g. Dashboard highlights,
+          // totals, success accents) will follow this user-selected colour.
+          secondary: _accentColor,
+          onSecondary: ThemeData.estimateBrightnessForColor(_accentColor) == Brightness.dark
+              ? Colors.white
+              : Colors.black,
+        ),
       ),
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [routeObserver],
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -588,6 +1038,7 @@ class _MyAppState extends State<MyApp> {
             jobs: jobs,
             customers: customers,
             priceBook: priceBook,
+            onRefresh: _refreshAppData, // Pass down the refresh callback
           );
         },
       ),
@@ -596,6 +1047,7 @@ class _MyAppState extends State<MyApp> {
               jobs: jobs,
               customers: customers,
               priceBook: priceBook,
+              onRefresh: _refreshAppData,
             ),
         '/jobs': (_) => JobsScreen(
               customers: customers,
@@ -609,8 +1061,8 @@ class _MyAppState extends State<MyApp> {
               onUpdate: _updateCustomer,
               onRemove: _removeCustomer,
             ),
-        '/pricebook': (_) => pb.PriceBookScreen(
-              priceBook: priceBook,
+        '/pricebook': (_) => pb.PriceBookChoiceScreen(
+              initialPriceBook: priceBook,
               onPriceBookUpdated: updatePriceBook,
             ),
         '/customer-form': (_) => const CustomerFormScreen(
@@ -620,6 +1072,7 @@ class _MyAppState extends State<MyApp> {
         '/offline': (_) => const OfflineDataScreen(),
         '/reports': (_) => ReportsScreen(jobs: jobs),
         '/settings': (_) => const SettingsScreen(),
+        '/scheduling': (_) => SchedulingScreen(jobs: jobs, customers: customers),
       },
     );
   }

@@ -45,7 +45,7 @@ class _PriceBookDialogState extends State<PriceBookDialog> {
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             decoration: const InputDecoration(hintText: 'Search...'),
             onChanged: (val) => setState(() => query = val),
           ),

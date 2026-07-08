@@ -66,6 +66,11 @@ class _PriceBookPickerState extends State<PriceBookPicker> {
     }).toList();
 
     filtered.sort((a, b) {
+      if (a.favourite != b.favourite) return a.favourite ? -1 : 1;
+      final aUsage = a.usageCount ?? 0;
+      final bUsage = b.usageCount ?? 0;
+      if (aUsage != bUsage) return bUsage.compareTo(aUsage);
+
       switch (_selectedSort) {
         case 'Code':
           return a.code.compareTo(b.code);
@@ -94,7 +99,7 @@ class _PriceBookPickerState extends State<PriceBookPicker> {
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: TextField(textCapitalization: TextCapitalization.sentences, 
                     controller: _searchController,
                     decoration: const InputDecoration(
                       labelText: 'Search',
@@ -188,10 +193,10 @@ class _PriceBookPickerState extends State<PriceBookPicker> {
                               content: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Name')),
-                                  TextField(controller: codeController, decoration: const InputDecoration(labelText: 'Code')),
-                                  TextField(controller: unitController, decoration: const InputDecoration(labelText: 'Unit')),
-                                  TextField(controller: priceController, decoration: const InputDecoration(labelText: 'Price'), keyboardType: TextInputType.number),
+                                  TextField(textCapitalization: TextCapitalization.sentences, controller: nameController, decoration: const InputDecoration(labelText: 'Name')),
+                                  TextField(textCapitalization: TextCapitalization.sentences, controller: codeController, decoration: const InputDecoration(labelText: 'Code')),
+                                  TextField(textCapitalization: TextCapitalization.sentences, controller: unitController, decoration: const InputDecoration(labelText: 'Unit')),
+                                  TextField(textCapitalization: TextCapitalization.sentences, controller: priceController, decoration: const InputDecoration(labelText: 'Price'), keyboardType: TextInputType.number),
                                 ],
                               ),
                               actions: [

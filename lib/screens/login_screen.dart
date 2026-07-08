@@ -86,7 +86,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: emailController,
               decoration: const InputDecoration(
                 labelText: 'Email',
@@ -96,7 +96,7 @@ class _LoginScreenState extends State<LoginScreen> {
               onChanged: (_) => setState(() => error = null),
             ),
             const SizedBox(height: 16),
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: passwordController,
               decoration: const InputDecoration(
                 labelText: 'Password',

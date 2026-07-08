@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firestore_service.dart';
 import '../models/job.dart';
 import '../models/customer.dart';
-import '../screens/pricebook_screen.dart' as pb;
+import '../screens/pricebook_extensive_screen.dart' as pb;
 
 /// Service to handle lazy loading of data to prevent memory issues
 class LazyLoadingService {

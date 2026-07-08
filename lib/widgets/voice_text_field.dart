@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
@@ -5,10 +6,13 @@ class VoiceTextField extends StatefulWidget {
   final TextEditingController controller;
   final String labelText;
   final String hintText;
-  final int maxLines;
+  final int? maxLines;
+  final int? minLines;
   final bool enabled;
   final InputDecoration? decoration;
   final VoidCallback? onChanged;
+  final VoidCallback? onEditingComplete;
+  final VoidCallback? onListeningStopped;
   final bool continuousListening; // New parameter for continuous listening mode
 
   const VoiceTextField({
@@ -17,9 +21,12 @@ class VoiceTextField extends StatefulWidget {
     required this.labelText,
     this.hintText = '',
     this.maxLines = 1,
+    this.minLines,
     this.enabled = true,
     this.decoration,
     this.onChanged,
+    this.onEditingComplete,
+    this.onListeningStopped,
     this.continuousListening = false, // Default to false for backwards compatibility
   });
 
@@ -429,6 +436,10 @@ class _VoiceTextFieldState extends State<VoiceTextField> {
         _isListening = false;
         _lastWords = '';
       });
+    } finally {
+      if (mounted) {
+        widget.onListeningStopped?.call();
+      }
     }
   }
 
@@ -437,7 +448,7 @@ class _VoiceTextFieldState extends State<VoiceTextField> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TextField(
+        TextField(textCapitalization: TextCapitalization.sentences, 
           controller: widget.controller,
           decoration: widget.decoration ?? InputDecoration(
             labelText: widget.labelText,
@@ -486,9 +497,14 @@ class _VoiceTextFieldState extends State<VoiceTextField> {
               ],
             ),
           ),
-          maxLines: widget.maxLines,
+          minLines: widget.minLines ?? widget.maxLines,
+          maxLines: widget.maxLines == null ? null : math.max(widget.maxLines!, widget.minLines ?? 1),
+          keyboardType: (widget.maxLines == null || (widget.maxLines ?? 1) > 1)
+              ? TextInputType.multiline
+              : TextInputType.text,
           enabled: widget.enabled,
           onChanged: (_) => widget.onChanged?.call(),
+          onEditingComplete: widget.onEditingComplete,
         ),
         // Status indicators
         if (_isListening && _lastWords.isNotEmpty)

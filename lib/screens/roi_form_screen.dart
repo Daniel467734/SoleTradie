@@ -101,10 +101,6 @@ class _RoiFormScreenState extends State<RoiFormScreen> with DocumentNamingMixin 
   // Form state variables - comprehensive for ROI
   DateTime _signDate = DateTime.now();
   
-  // Auto-save functionality
-  Timer? _saveDebounce;
-  bool _hasUnsavedChanges = false;
-  
   // Property Type checkboxes (only one can be selected)
   String _propertyType = '';
   
@@ -181,7 +177,6 @@ class _RoiFormScreenState extends State<RoiFormScreen> with DocumentNamingMixin 
     _regulationsDesignController.dispose();
     _resultsOfInspectionController.dispose();
     _otherSpecifyController.dispose();
-    _saveDebounce?.cancel();
     super.dispose();
   }
 
@@ -500,7 +495,9 @@ class _RoiFormScreenState extends State<RoiFormScreen> with DocumentNamingMixin 
 
       // Add to job attachments
       widget.job.attachments ??= [];
-      widget.job.attachments!.add(file.path);
+      if (!widget.job.attachments!.contains(file.path)) {
+        widget.job.attachments!.add(file.path);
+      }
       
       // Save job with new attachment
       await _saveJob();
@@ -633,15 +630,6 @@ class _RoiFormScreenState extends State<RoiFormScreen> with DocumentNamingMixin 
         throw Exception('SMTP settings not configured');
       }
 
-      final subject = 'ROI ($address)';
-      final body = '''Hello ${_electricalWorker2NameController.text},
-
-Please find attached the Record of Inspection (ROI) for the electrical work at $address.
-
-ROI attached.
-
-Best regards''';
-
       // Use existing SMTP method from job_details_screen
       // This would need to be imported or implemented
       // await sendEmailViaSmtp(
@@ -695,37 +683,16 @@ Best regards''';
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/job_${widget.job.id}.json');
       await file.writeAsString(jsonEncode(widget.job.toJson()));
-      
-      // Save to cloud using hybrid storage system
-      await FirestoreService.saveJob(widget.job);
-      
-      // Trigger sync through scheduler for optimal cloud sync
-      await SyncScheduler.syncNow(DataType.jobs);
-      
-      setState(() {
-        _hasUnsavedChanges = false;
-      });
-      
+      // Try to sync to cloud, but ignore errors
+      try {
+        await FirestoreService.saveJob(widget.job);
+        await SyncScheduler.syncNow(DataType.jobs);
+      } catch (e) {
+        print('Cloud sync failed: $e');
+      }
     } catch (e) {
-      print('Error saving job: $e');
-      // Still show success for local save even if cloud fails
+      print('Error saving job locally: $e');
     }
-  }
-
-  /// Debounced auto-save to avoid frequent saves (30 second delay)
-  void _debouncedSave() {
-    _saveDebounce?.cancel();
-    _saveDebounce = Timer(const Duration(seconds: 30), () {
-      _saveJob();
-    });
-  }
-
-  /// Mark as having unsaved changes and trigger auto-save
-  void _markDirtyAndAutoSave() {
-    setState(() {
-      _hasUnsavedChanges = true;
-    });
-    _debouncedSave();
   }
 
   Future<void> _selectDate() async {
@@ -792,7 +759,7 @@ Best regards''';
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _referenceNumberController,
                   decoration: const InputDecoration(
                     labelText: 'Reference Number',
@@ -823,7 +790,7 @@ Best regards''';
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _inspectorNameController,
                             decoration: const InputDecoration(
                               labelText: 'Inspector Name',
@@ -834,7 +801,7 @@ Best regards''';
                         ),
                         const SizedBox(width: 16),
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _inspectorLicenseController,
                             decoration: const InputDecoration(
                               labelText: 'Registration/License',
@@ -851,7 +818,7 @@ Best regards''';
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _inspectorEmailController,
                             decoration: const InputDecoration(
                               labelText: 'Email Address',
@@ -863,7 +830,7 @@ Best regards''';
                         ),
                         const SizedBox(width: 16),
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _inspectorPhoneController,
                             decoration: const InputDecoration(
                               labelText: 'Phone Number',
@@ -886,7 +853,7 @@ Best regards''';
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _locationAddressController,
                   decoration: const InputDecoration(
                     labelText: 'Location Address',
@@ -958,7 +925,7 @@ Best regards''';
                     ),
                     const SizedBox(height: 16),
                     
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _cocDetailsController,
                       decoration: const InputDecoration(
                         labelText: 'CoC Details',
@@ -1032,7 +999,7 @@ Best regards''';
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _electricalWorker2NameController,
                             decoration: const InputDecoration(
                               labelText: 'Electrical Worker Name',
@@ -1042,7 +1009,7 @@ Best regards''';
                         ),
                         const SizedBox(width: 16),
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _electricalWorker2LicenseController,
                             decoration: const InputDecoration(
                               labelText: 'Registration/License',
@@ -1055,7 +1022,7 @@ Best regards''';
                     
                     const SizedBox(height: 16),
                     
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _electricalWorker2EmailController,
                       decoration: const InputDecoration(
                         labelText: 'Email (for PDF notification)',
@@ -1227,7 +1194,7 @@ Best regards''';
                     
                     if (_other) ...[
                       const SizedBox(height: 8),
-                      TextField(
+                      TextField(textCapitalization: TextCapitalization.sentences, 
                         controller: _otherSpecifyController,
                         decoration: const InputDecoration(
                           labelText: 'Specify Other',

@@ -30,7 +30,7 @@ class WhisperVoiceTextField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TextField(
+        TextField(textCapitalization: TextCapitalization.sentences, 
           controller: controller,
           decoration: InputDecoration(
             hintText: hintText,

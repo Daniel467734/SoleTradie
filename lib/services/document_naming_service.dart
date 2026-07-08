@@ -2,39 +2,78 @@ import '../models/job.dart';
 
 class DocumentNamingService {
   /// Generate standardized PDF filename with automatic numbering
-  /// Format: [Type] [Job Site Address] [Job Number] [(count)]
-  /// Example: "Invoice 22B Campbell Ave 3664566345 (2)"
+  /// Format: [Type] [YYMMDD][version] for estimates/quotes, or [Type] [Job Site Address] [Job Number] [(count)] for invoices
+  /// Example: "Estimate 2607021" or "Quote 2607022"
   static String generatePdfFileName({
     required String documentType,
     required Job job,
     List<String>? existingAttachments,
+    String? documentNumber,
   }) {
-    // Clean and format the document type
     final cleanType = _cleanDocumentType(documentType);
-    
+    final attachments = existingAttachments ?? [];
+
+    if (cleanType == 'Estimate' || cleanType == 'Quote') {
+      final datePrefix = _formatDate(DateTime.now());
+      final sequence = countExistingDocumentsForDate(cleanType, attachments, datePrefix) + 1;
+      final fileName = '$cleanType ${datePrefix}${sequence}';
+      return _ensurePdfExtension(fileName);
+    }
+
+    // Use invoice number when provided for invoice documents
+    final identifier =
+        (cleanType == 'Invoice' && (documentNumber?.trim().isNotEmpty ?? false))
+            ? documentNumber!.trim()
+            : job.id;
+
     // Get job site address (cleaned)
     final address = _cleanAddress(job.address ?? 'Unknown Address');
-    
-    // Get job number
-    final jobNumber = job.id;
-    
+
     // Build base filename
-    final baseName = '$cleanType $address $jobNumber';
-    
+    final baseName = '$cleanType $identifier $address';
+
     // Count existing documents of the same type
-    final count = countExistingDocuments(cleanType, existingAttachments ?? []);
-    
+    final count = countExistingDocuments(cleanType, attachments);
+
     // Add count if there are multiple documents
     final fileName = count > 1 ? '$baseName ($count)' : baseName;
-    
-    // Ensure .pdf extension is added
+
+    return _ensurePdfExtension(fileName);
+  }
+
+  static String _formatDate(DateTime date) {
+    final year = (date.year % 100).toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '$year$month$day';
+  }
+
+  static String _ensurePdfExtension(String fileName) {
     return fileName.toLowerCase().endsWith('.pdf') ? fileName : '$fileName.pdf';
+  }
+
+  /// Count existing estimate/quote documents for a specific date prefix
+  static int countExistingDocumentsForDate(
+      String documentType, List<String> existingAttachments, String datePrefix) {
+    int count = 0;
+    final typeLower = documentType.toLowerCase();
+    final pattern = RegExp(r'^' + RegExp.escape(typeLower) + r'\s+' + RegExp.escape(datePrefix) + r'(\d+)');
+
+    for (final attachment in existingAttachments) {
+      final filename =
+          attachment.split(RegExp(r'[\\/]+')).last.toLowerCase().trim();
+      if (pattern.hasMatch(filename)) {
+        count++;
+      }
+    }
+
+    return count;
   }
 
   /// Clean and standardize document type names
   static String _cleanDocumentType(String type) {
     final lowercaseType = type.toLowerCase().trim();
-    
+
     // Standardize document type names
     switch (lowercaseType) {
       case 'invoice':
@@ -58,7 +97,8 @@ class DocumentNamingService {
         return 'ROI';
       default:
         // Capitalize first letter for unknown types
-        return type.substring(0, 1).toUpperCase() + type.substring(1).toLowerCase();
+        return type.substring(0, 1).toUpperCase() +
+            type.substring(1).toLowerCase();
     }
   }
 
@@ -69,7 +109,7 @@ class DocumentNamingService {
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '') // Remove invalid chars
         .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
         .trim();
-    
+
     // Limit length to prevent overly long filenames
     if (cleaned.length > 50) {
       cleaned = cleaned.substring(0, 50).trim();
@@ -79,29 +119,39 @@ class DocumentNamingService {
         cleaned = cleaned.substring(0, lastSpace);
       }
     }
-    
+
     return cleaned.isNotEmpty ? cleaned : 'Unknown Address';
   }
 
   /// Count existing documents of the same type
-  static int countExistingDocuments(String documentType, List<String> existingAttachments) {
+  static int countExistingDocuments(
+      String documentType, List<String> existingAttachments) {
     int count = 0;
-    
+    final documentTypeLower = documentType.toLowerCase();
+    final datePrefixedPattern =
+        RegExp(r'^\d{4}-\d{2}-\d{2}\s+' + RegExp.escape(documentTypeLower));
+
     for (final attachment in existingAttachments) {
-      // Check if attachment starts with the document type
-      if (attachment.toLowerCase().startsWith(documentType.toLowerCase())) {
+      final filename =
+          attachment.split(RegExp(r'[\\/]+')).last.toLowerCase().trim();
+      if (filename.startsWith(documentTypeLower) ||
+          datePrefixedPattern.hasMatch(filename)) {
         count++;
       }
     }
-    
-    // Return the next number (current count + 1)
-    return count + 1;
+
+    return count;
   }
 
   /// Extract document type from existing filename
   static String? extractDocumentType(String filename) {
-    final parts = filename.split(' ');
+    final nameWithoutExt = filename.replaceAll(RegExp(r'\.(pdf|PDF)$'), '');
+    final parts = nameWithoutExt.split(' ');
     if (parts.isNotEmpty) {
+      if (parts.length > 1 &&
+          RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(parts.first)) {
+        return _cleanDocumentType(parts[1]);
+      }
       return _cleanDocumentType(parts.first);
     }
     return null;
@@ -117,11 +167,11 @@ class DocumentNamingService {
     final cleanType = _cleanDocumentType(documentType);
     final cleanAddress = _cleanAddress(address);
     final baseName = '$cleanType $cleanAddress $jobNumber';
-    
-    final fileName = (documentCount != null && documentCount > 1) 
-        ? '$baseName ($documentCount)' 
+
+    final fileName = (documentCount != null && documentCount > 1)
+        ? '$baseName ($documentCount)'
         : baseName;
-    
+
     // Ensure .pdf extension is added
     return fileName.toLowerCase().endsWith('.pdf') ? fileName : '$fileName.pdf';
   }
@@ -133,20 +183,20 @@ class DocumentNamingService {
         .replaceAll(RegExp(r'[<>:"/\\|?*]'), '') // Remove invalid chars
         .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
         .trim();
-    
+
     // Ensure it's not too long (most file systems support 255 chars)
     if (safe.length > 200) {
       safe = safe.substring(0, 200).trim();
     }
-    
+
     // Ensure it doesn't end with a period or space
     safe = safe.replaceAll(RegExp(r'[. ]+$'), '');
-    
+
     // Ensure .pdf extension
     if (!safe.toLowerCase().endsWith('.pdf')) {
       safe = '$safe.pdf';
     }
-    
+
     return safe.isNotEmpty ? safe : 'Document.pdf';
   }
 
@@ -154,7 +204,7 @@ class DocumentNamingService {
   static List<String> getSupportedDocumentTypes() {
     return [
       'Invoice',
-      'Quote', 
+      'Quote',
       'Estimate',
       'ESC',
       'COC',
@@ -167,30 +217,31 @@ class DocumentNamingService {
   static Map<String, String?> parseFileName(String filename) {
     // Remove extension if present
     final nameWithoutExt = filename.replaceAll(RegExp(r'\.(pdf|PDF)$'), '');
-    
+
     final parts = nameWithoutExt.split(' ');
-    
+
     if (parts.isEmpty) {
       return {'type': null, 'address': null, 'jobNumber': null, 'count': null};
     }
-    
+
     String? type = parts.first;
     String? count;
-    
+
     // Extract count if present (e.g., "(2)")
     final countMatch = RegExp(r'\((\d+)\)$').firstMatch(nameWithoutExt);
     if (countMatch != null) {
       count = countMatch.group(1);
       // Remove count from parts for further processing
-      final withoutCount = nameWithoutExt.replaceAll(RegExp(r'\s*\(\d+\)$'), '');
+      final withoutCount =
+          nameWithoutExt.replaceAll(RegExp(r'\s*\(\d+\)$'), '');
       parts.clear();
       parts.addAll(withoutCount.split(' '));
     }
-    
+
     // Try to extract job number (usually the last part that's numeric)
     String? jobNumber;
     String? address;
-    
+
     if (parts.length > 1) {
       // Find the last part that looks like a job number
       for (int i = parts.length - 1; i >= 1; i--) {
@@ -203,13 +254,13 @@ class DocumentNamingService {
           break;
         }
       }
-      
+
       // If no job number found, treat everything after type as address
       if (jobNumber == null && parts.length > 1) {
         address = parts.sublist(1).join(' ');
       }
     }
-    
+
     return {
       'type': type,
       'address': address,

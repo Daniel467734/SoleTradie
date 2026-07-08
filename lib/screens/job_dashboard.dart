@@ -10,6 +10,7 @@ import 'settings_screen.dart';
 import 'home_dashboard.dart';
 import '../models/customer.dart';
 import '../models/estimate_template.dart'; // <-- Use the real model
+import '../widgets/address_search_field.dart';
 
 class JobDashboardScreen extends StatefulWidget {
   const JobDashboardScreen({super.key});
@@ -49,15 +50,25 @@ class _JobDashboardScreenState extends State<JobDashboardScreen> {
   }
 
   void _showAddJobDialog() async {
-    await showDialog(
+    print('🔧 _showAddJobDialog called');
+    final selectedCustomer = await showDialog<Customer>(
       context: context,
       builder: (context) => AddJobDialog(
         customers: customers,
-        onCustomerAdded: (customer) {
-          _addCustomer(customer);
+        onCustomerAdded: (customer) async {
+          await _addCustomer(customer);
         },
       ),
     );
+
+    if (selectedCustomer != null) {
+      print('🔧 Add Job dialog returned customer: ${selectedCustomer.id}');
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => JobDetailsEntryScreen(customer: selectedCustomer)),
+      );
+    } else {
+      print('🔧 Add Job dialog closed without selecting a customer');
+    }
   }
 
   void _showAddCustomerDialog() async {
@@ -66,6 +77,7 @@ class _JobDashboardScreenState extends State<JobDashboardScreen> {
     final addressController = TextEditingController();
     final emailController = TextEditingController();
     final phoneController = TextEditingController();
+    final bodyCorporateController = TextEditingController();
     final paymentTermsOptions = [
       '7 days',
       '14 days',
@@ -84,25 +96,29 @@ class _JobDashboardScreenState extends State<JobDashboardScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: companyController,
                   decoration: const InputDecoration(labelText: 'Company Name (if applicable)'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: nameController,
                   decoration: const InputDecoration(labelText: 'Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
                   decoration: const InputDecoration(labelText: 'Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: emailController,
                   decoration: const InputDecoration(labelText: 'Email Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: phoneController,
                   decoration: const InputDecoration(labelText: 'Phone Number'),
+                ),
+                TextField(textCapitalization: TextCapitalization.sentences, 
+                  controller: bodyCorporateController,
+                  decoration: const InputDecoration(labelText: 'Body Corporate Number (Optional)'),
                 ),
                 DropdownButtonFormField<String>(
                   initialValue: selectedPaymentTerm,
@@ -136,6 +152,7 @@ class _JobDashboardScreenState extends State<JobDashboardScreen> {
                   address: addressController.text.trim(),
                   email: emailController.text.trim(),
                   phone: phoneController.text.trim(),
+                  bodyCorporateNumber: bodyCorporateController.text.trim(),
                   paymentTerms: selectedPaymentTerm,
                 );
                 Navigator.pop(context, newCustomer);
@@ -151,47 +168,73 @@ class _JobDashboardScreenState extends State<JobDashboardScreen> {
       setState(() {
         customers.add(result);
       });
-      saveCustomersToDisk();
+      await saveCustomersToDisk();
     }
   }
 
+  Future<File> _getCustomersFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/customers.json');
+  }
+
   Future<void> saveCustomersToDisk() async {
+    final jsonList = customers.map((c) => c.toJson()).toList();
+    final file = await _getCustomersFile();
+    await file.writeAsString(jsonEncode(jsonList));
+
     final prefs = await SharedPreferences.getInstance();
-    final jsonList = customers.map((c) => jsonEncode(c.toJson())).toList();
-    await prefs.setStringList('customer_book', jsonList);
+    await prefs.setStringList('customer_book', customers.map((c) => jsonEncode(c.toJson())).toList());
   }
 
   Future<void> loadCustomersFromDisk() async {
+    final file = await _getCustomersFile();
+    if (await file.exists()) {
+      try {
+        final raw = await file.readAsString();
+        if (raw.trim().isNotEmpty) {
+          final List<dynamic> jsonList = jsonDecode(raw);
+          setState(() {
+            customers = jsonList.map((e) => Customer.fromJson(e)).toList();
+          });
+          return;
+        }
+      } catch (_) {
+        // If file is corrupted, fall back to prefs
+      }
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final jsonList = prefs.getStringList('customer_book') ?? [];
-    setState(() {
-      customers = jsonList.map((s) => Customer.fromJson(jsonDecode(s))).toList();
-    });
+    if (jsonList.isNotEmpty) {
+      setState(() {
+        customers = jsonList.map((s) => Customer.fromJson(jsonDecode(s))).toList();
+      });
+    }
   }
 
   // Add a customer
-  void _addCustomer(Customer customer) {
+  Future<void> _addCustomer(Customer customer) async {
     setState(() {
       customers.add(customer);
     });
-    saveCustomersToDisk();
+    await saveCustomersToDisk();
   }
 
   // Edit a customer
-  void _editCustomer(Customer updated) {
+  Future<void> _editCustomer(Customer updated) async {
     setState(() {
       final idx = customers.indexWhere((c) => c.id == updated.id);
       if (idx != -1) customers[idx] = updated;
     });
-    saveCustomersToDisk();
+    await saveCustomersToDisk();
   }
 
   // Remove a customer
-  void _removeCustomer(String id) {
+  Future<void> _removeCustomer(String id) async {
     setState(() {
       customers.removeWhere((c) => c.id == id);
     });
-    saveCustomersToDisk();
+    await saveCustomersToDisk();
   }
 
   @override
@@ -329,6 +372,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
     final addressController = TextEditingController();
     final emailController = TextEditingController();
     final phoneController = TextEditingController();
+    final bodyCorporateController = TextEditingController();
 
     final result = await showDialog<Customer>(
       context: context,
@@ -337,21 +381,25 @@ class _AddJobDialogState extends State<AddJobDialog> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: nameController,
               decoration: const InputDecoration(labelText: 'Name'),
             ),
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: addressController,
               decoration: const InputDecoration(labelText: 'Address'),
             ),
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: emailController,
               decoration: const InputDecoration(labelText: 'Email'),
             ),
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               controller: phoneController,
               decoration: const InputDecoration(labelText: 'Phone'),
+            ),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: bodyCorporateController,
+              decoration: const InputDecoration(labelText: 'Body Corporate Number (Optional)'),
             ),
           ],
         ),
@@ -369,6 +417,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
                 address: addressController.text.trim(),
                 email: emailController.text.trim(),
                 phone: phoneController.text.trim(),
+                bodyCorporateNumber: bodyCorporateController.text.trim(),
               );
               Navigator.pop(context, newCustomer);
             },
@@ -383,6 +432,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
       setState(() {
         selectedCustomer = result;
       });
+      Navigator.of(context).pop(result);
     }
   }
 
@@ -399,7 +449,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             decoration: const InputDecoration(labelText: 'Search customer'),
             onChanged: (val) => setState(() => search = val),
           ),
@@ -417,7 +467,10 @@ class _AddJobDialogState extends State<AddJobDialog> {
                         child: ListTile(
                           title: Text(customer.name),
                           subtitle: Text(customer.address),
-                          onTap: () => setState(() => selectedCustomer = customer),
+                          onTap: () {
+                            setState(() => selectedCustomer = customer);
+                            Navigator.of(context).pop(customer);
+                          },
                           trailing: isSelected
                               ? const Icon(Icons.check_circle, color: Colors.blue)
                               : null,
@@ -443,12 +496,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
           onPressed: selectedCustomer == null
               ? null
               : () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => JobDetailsEntryScreen(customer: selectedCustomer!),
-                    ),
-                  );
+                  Navigator.of(context).pop(selectedCustomer);
                 },
           child: const Text('Next'),
         ),
@@ -488,9 +536,15 @@ class _JobDetailsEntryScreenState extends State<JobDetailsEntryScreen> {
       appBar: AppBar(title: Text('Job for ${widget.customer.name}')),
       body: Column(
         children: [
-          TextField(
+          AddressSearchField(
             controller: addressController,
-            decoration: const InputDecoration(labelText: 'Job Address'),
+            labelText: 'Job Address',
+            helperText: 'Start typing to search for addresses',
+            isRequired: true,
+            onAddressSelected: (addressResult) {
+              // Optionally handle address selection
+              print('Selected address: ${addressResult.address}');
+            },
           ),
           // ...other fields...
         ],

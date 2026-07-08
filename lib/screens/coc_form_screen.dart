@@ -26,7 +26,8 @@ class CocFormScreen extends StatefulWidget {
   State<CocFormScreen> createState() => _CocFormScreenState();
 }
 
-class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin {
+class _CocFormScreenState extends State<CocFormScreen>
+    with DocumentNamingMixin {
   // Form controllers
   final _referenceNumberController = TextEditingController();
   final _siteAddressController = TextEditingController();
@@ -51,9 +52,10 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   final _sdocLinkController = TextEditingController();
 
   // Form state variables
-  String _workType = ''; // Addition, Alteration, New Work - No default selection
+  String _workType =
+      ''; // Addition, Alteration, New Work - No default selection
   String _riskLevel = ''; // Low Risk, General, High Risk - No default selection
-  bool _meansCompliancePart1 = true; // Default true
+  bool _meansCompliancePart1 = false; // Default false
   bool _meansCompliancePart2 = true; // Default true
   bool _additionalStandardsNo = true; // Default No
   bool _additionalStandardsYes = false;
@@ -81,13 +83,13 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   // Date variables
   DateTime _signDate = DateTime.now();
   DateTime _connectionDate = DateTime.now();
-  
+
   // Signature path
   String? _signaturePath;
-  
+
   // Field placement setting
   bool _useExpandedInfoSection = true;
-  
+
   // Auto-save functionality
   Timer? _saveDebounce;
   bool _hasUnsavedChanges = false;
@@ -100,64 +102,76 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
 
   Future<void> _initializeForm() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     // Auto-fill reference number (job-based)
     _referenceNumberController.text = widget.job.id;
-    
+
     // Auto-fill site address
     _siteAddressController.text = widget.job.address ?? '';
-    
+
     // Auto-fill customer name and address
-    final customerInfo = '${widget.job.customerName ?? ''}\n${widget.job.address ?? ''}';
-    _customerNameAddressController.text = customerInfo;
-    
+    final customerName = widget.job.documentCustomerName;
+    final address = widget.job.address ?? '';
+    _customerNameAddressController.text = [customerName, address]
+        .where((part) => part.trim().isNotEmpty)
+        .join('\n');
+
     // Auto-fill user information from settings
-    _userNameController.text = '${prefs.getString('first_name') ?? ''} ${prefs.getString('last_name') ?? ''}'.trim();
+    _userNameController.text =
+        '${prefs.getString('first_name') ?? ''} ${prefs.getString('last_name') ?? ''}'
+            .trim();
     _userLicenseController.text = prefs.getString('electrical_license') ?? '';
-    
+
     // Load user signature path
     _signaturePath = prefs.getString('signature_path');
-    
+
     // Load field placement setting
-    _useExpandedInfoSection = prefs.getBool('use_expanded_info_section') ?? true;
-    
+    _useExpandedInfoSection =
+        prefs.getBool('use_expanded_info_section') ?? true;
+
     // Auto-fill phone and email
     final email = prefs.getString('personal_email') ?? '';
     final phone = prefs.getString('phone') ?? '';
     _userPhoneController.text = phone;
     _userEmailController.text = email;
-    
+
     // Auto-fill work date range logic (not displayed in current form but kept for potential future use)
     // Default supply type logic (not displayed in current form but kept for potential future use)
-    
+
     // Initialize test results with empty values (no prefilling as requested)
     _insulationResistanceController.text = '';
     _earthContinuityController.text = '';
     _bondingController.text = '';
     _faultLoopController.text = '';
     _otherController.text = '';
-    
+
     // Initialize range dates
     final today = DateFormat('dd/MM/yyyy').format(DateTime.now());
     _rangeDatesController.text = today;
-    
+
     // Initialize default links from settings
-    _manufacturerInstructionsController.text = prefs.getString('main_supplier_link') ?? '';
-    _certifiedDesignController.text = prefs.getString('default_design_link') ?? '';
+    _manufacturerInstructionsController.text =
+        prefs.getString('main_supplier_link') ?? '';
+    _certifiedDesignController.text =
+        prefs.getString('default_design_link') ?? '';
     _sdocLinkController.text = prefs.getString('main_supplier_link') ?? '';
-    _partsSpecifyController.text = prefs.getString('default_parts_specify') ?? 'Notes in the description';
-    
+    _partsSpecifyController.text =
+        prefs.getString('default_parts_specify') ?? 'Notes in the description';
+
     // Load company trainees
     final trainees = prefs.getStringList('company_trainees') ?? [];
     setState(() {
       _companyTrainees = trainees;
     });
-    
+
     // Load default supervised person
-    final defaultSupervised = prefs.getString('default_supervised_person') ?? '';
+    final defaultSupervised =
+        prefs.getString('default_supervised_person') ?? '';
     if (defaultSupervised.isNotEmpty) {
       _supervisedPersonController.text = defaultSupervised;
-      _selectedTrainee = _companyTrainees.contains(defaultSupervised) ? defaultSupervised : 'custom';
+      _selectedTrainee = _companyTrainees.contains(defaultSupervised)
+          ? defaultSupervised
+          : 'custom';
     }
   }
 
@@ -196,65 +210,70 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     'customerNameAddress': {'x': 129, 'y': 108, 'width': 400},
     'phoneEmail': {'x': 181, 'y': 180, 'width': 551, 'height': 211},
     'supervisedPerson': {'x': 178, 'y': 192.5},
-    
+
     // Work Type checkboxes - Exact coordinates specified by user - DO NOT MOVE
     'workTypeAddition': {'x': 192, 'y': 232},
     'workTypeAlteration': {'x': 307, 'y': 234},
     'workTypeNewWork': {'x': 391, 'y': 233},
-    
+
     // Risk Level checkboxes - Exact coordinates specified by user - DO NOT MOVE
     'riskLevelLow': {'x': 192, 'y': 246},
     'riskLevelGeneral': {'x': 307, 'y': 246},
     'riskLevelHigh': {'x': 391, 'y': 247},
     'highRiskSpecify': {'x': 32, 'y': 257},
-    
+
     // Means of Compliance
     'meansCompliancePart1': {'x': 191, 'y': 270},
     'meansCompliancePart2': {'x': 305, 'y': 271},
-    
+
     // Additional Standards
     'additionalStandardsNo': {'x': 317, 'y': 283},
     'additionalStandardsYes': {'x': 350, 'y': 283},
-    'additionalStandardsSpecify': {'x': 418, 'y': 279, 'width': 127, 'height': 12},
-    
+    'additionalStandardsSpecify': {
+      'x': 418,
+      'y': 279,
+      'width': 127,
+      'height': 12
+    },
+
     // Range of Dates
     'rangeDates': {'x': 310, 'y': 294},
-    
+
     // Fittings Safe to Connect
     'fittingsSafeYes': {'x': 327, 'y': 309},
     'fittingsSafeNo': {'x': 358, 'y': 310},
-    
+
     // Supply System
     'supplySystem': {'x': 161, 'y': 321},
-    
+
     // Earth System
     'earthSystemYes': {'x': 383, 'y': 338},
     'earthSystemNo': {'x': 454, 'y': 338},
-    
+
     // Certificate Relates To
     'certificateAll': {'x': 35, 'y': 366},
     'certificateParts': {'x': 67, 'y': 365},
     'partsSpecify': {'x': 165, 'y': 361},
-    
+
     // Manufacturer Instructions
     'manufacturerInstructionsYes': {'x': 309, 'y': 378},
     'manufacturerInstructionsNo': {'x': 382, 'y': 379},
     'manufacturerInstructionsLink': {'x': 73, 'y': 417},
-    
+
     // Certified Design
     'certifiedDesignYes': {'x': 329, 'y': 438},
     'certifiedDesignNo': {'x': 397, 'y': 438},
     'certifiedDesignLink': {'x': 73, 'y': 475},
-    
+
     // SDoC
     'sdocYes': {'x': 325, 'y': 495},
     'sdocNo': {'x': 395, 'y': 495},
     'sdocLink': {'x': 73, 'y': 510},
-    
+
     // Installation Testing
     'testedNo': {'x': 446, 'y': 554},
     'testedYes': {'x': 485, 'y': 553},
-    
+
     // Test Results
     'polarityCorrect': {'x': 467, 'y': 580},
     'insulationResistance': {'x': 469, 'y': 601},
@@ -262,10 +281,10 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     'bonding': {'x': 469, 'y': 625},
     'faultLoop': {'x': 469, 'y': 637},
     'otherTests': {'x': 469, 'y': 652},
-    
+
     // Work Description
     'workDescription': {'x': 36, 'y': 580, 'width': 366, 'height': 80},
-    
+
     // User Information
     'userName': {'x': 116, 'y': 760},
     'userName2': {'x': 126, 'y': 146},
@@ -273,7 +292,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     'userLicense2': {'x': 390, 'y': 146},
     'userSignature1': {'x': 113, 'y': 786},
     'userSignature2': {'x': 122, 'y': 698},
-    
+
     // Dates
     'signDate': {'x': 285, 'y': 787},
     'signDate2': {'x': 374, 'y': 697},
@@ -283,7 +302,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   /// Validate required fields and return list of missing field names
   List<String> _validateRequiredFields() {
     final List<String> missingFields = [];
-    
+
     // Check all required text fields (excluding supervised person, manufacturer link, and SDoC link)
     if (_referenceNumberController.text.trim().isEmpty) {
       missingFields.add('Reference Number');
@@ -313,9 +332,10 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
       missingFields.add('Parts Specify (required when Parts is selected)');
     }
     if (_certifiedDesignController.text.trim().isEmpty && _certifiedDesignYes) {
-      missingFields.add('Certified Design Link (required when Yes is selected)');
+      missingFields
+          .add('Certified Design Link (required when Yes is selected)');
     }
-    
+
     // Check test result fields
     if (_insulationResistanceController.text.trim().isEmpty) {
       missingFields.add('Insulation Resistance');
@@ -329,7 +349,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     if (_faultLoopController.text.trim().isEmpty) {
       missingFields.add('Fault Loop');
     }
-    
+
     return missingFields;
   }
 
@@ -350,14 +370,14 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
               ),
               const SizedBox(height: 12),
               ...missingFields.map((field) => Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  children: [
-                    const Text('• ', style: TextStyle(color: Colors.red)),
-                    Expanded(child: Text(field)),
-                  ],
-                ),
-              )),
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      children: [
+                        const Text('• ', style: TextStyle(color: Colors.red)),
+                        Expanded(child: Text(field)),
+                      ],
+                    ),
+                  )),
               const SizedBox(height: 16),
               const Text(
                 'Do you want to generate the PDF anyway?',
@@ -386,7 +406,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         ],
       ),
     );
-    
+
     // If user didn't choose to continue, we won't generate the PDF
     if (shouldContinue != true) {
       throw Exception('PDF generation cancelled by user');
@@ -400,432 +420,518 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
       await _showValidationWarning(validationErrors);
       return; // Don't generate PDF if user chooses not to continue
     }
-    
+
     try {
       // Load the COC EWRB template from assets
-      final ByteData templateData = await rootBundle.load('assets/certificates/COC EWRB NZ.pdf');
+      final ByteData templateData =
+          await rootBundle.load('assets/certificates/COC EWRB NZ.pdf');
       final Uint8List templateBytes = templateData.buffer.asUint8List();
 
       // Load the existing PDF template using Syncfusion
-      final sfpdf.PdfDocument existingDocument = sfpdf.PdfDocument(inputBytes: templateBytes);
-      
+      final sfpdf.PdfDocument existingDocument =
+          sfpdf.PdfDocument(inputBytes: templateBytes);
+
       // Get the first page to overlay text on
       final sfpdf.PdfPage page = existingDocument.pages[0];
-      
+
       // Get the graphics object to draw on the page
       final sfpdf.PdfGraphics graphics = page.graphics;
-      
+
       // Create fonts for different text sizes
-      final sfpdf.PdfFont font10 = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
-      final sfpdf.PdfFont font9 = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 9);
-      final sfpdf.PdfFont font8 = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 8);
-      
+      final sfpdf.PdfFont font10 =
+          sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
+      final sfpdf.PdfFont font9 =
+          sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 9);
+      final sfpdf.PdfFont font8 =
+          sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 8);
+
       // Create brush for text color
-      final sfpdf.PdfBrush blackBrush = sfpdf.PdfSolidBrush(sfpdf.PdfColor(0, 0, 0));
-      
+      final sfpdf.PdfBrush blackBrush =
+          sfpdf.PdfSolidBrush(sfpdf.PdfColor(0, 0, 0));
+
       // Add text at specific coordinates based on the EWRB form layout
       // Reference Number (top right)
       graphics.drawString(
         _referenceNumberController.text,
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['referenceNumber']!['x']!, 
-                              _cocFieldCoordinates['referenceNumber']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['referenceNumber']!['x']!,
+            _cocFieldCoordinates['referenceNumber']!['y']!, 100, 20),
       );
-      
+
       // Site Address
       graphics.drawString(
         _siteAddressController.text,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['siteAddress']!['x']!, 
-                              _cocFieldCoordinates['siteAddress']!['y']!, 
-                              _cocFieldCoordinates['siteAddress']!['width']!, 
-                              60),
-        format: sfpdf.PdfStringFormat(lineAlignment: sfpdf.PdfVerticalAlignment.top, wordWrap: sfpdf.PdfWordWrapType.word),
+        bounds: Rect.fromLTWH(
+            _cocFieldCoordinates['siteAddress']!['x']!,
+            _cocFieldCoordinates['siteAddress']!['y']!,
+            _cocFieldCoordinates['siteAddress']!['width']!,
+            60),
+        format: sfpdf.PdfStringFormat(
+            lineAlignment: sfpdf.PdfVerticalAlignment.top,
+            wordWrap: sfpdf.PdfWordWrapType.word),
       );
-      
+
       // Customer Name and Address
       graphics.drawString(
         _customerNameAddressController.text,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['customerNameAddress']!['x']!, 
-                              _cocFieldCoordinates['customerNameAddress']!['y']!, 
-                              _cocFieldCoordinates['customerNameAddress']!['width']!, 
-                              60),
-        format: sfpdf.PdfStringFormat(lineAlignment: sfpdf.PdfVerticalAlignment.top, wordWrap: sfpdf.PdfWordWrapType.word),
+        bounds: Rect.fromLTWH(
+            _cocFieldCoordinates['customerNameAddress']!['x']!,
+            _cocFieldCoordinates['customerNameAddress']!['y']!,
+            _cocFieldCoordinates['customerNameAddress']!['width']!,
+            60),
+        format: sfpdf.PdfStringFormat(
+            lineAlignment: sfpdf.PdfVerticalAlignment.top,
+            wordWrap: sfpdf.PdfWordWrapType.word),
       );
-      
+
       // Work Type Checkboxes - Amazing visible tick marks! (Only draw if selected)
       if (_workType == 'Addition') {
-        print('Drawing amazing tick mark for Addition at ${_cocFieldCoordinates['workTypeAddition']!['x']}, ${_cocFieldCoordinates['workTypeAddition']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['workTypeAddition']!['x']!, _cocFieldCoordinates['workTypeAddition']!['y']!);
+        print(
+            'Drawing amazing tick mark for Addition at ${_cocFieldCoordinates['workTypeAddition']!['x']}, ${_cocFieldCoordinates['workTypeAddition']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['workTypeAddition']!['x']!,
+            _cocFieldCoordinates['workTypeAddition']!['y']!);
       }
       if (_workType == 'Alteration') {
-        print('Drawing amazing tick mark for Alteration at ${_cocFieldCoordinates['workTypeAlteration']!['x']}, ${_cocFieldCoordinates['workTypeAlteration']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['workTypeAlteration']!['x']!, _cocFieldCoordinates['workTypeAlteration']!['y']!);
+        print(
+            'Drawing amazing tick mark for Alteration at ${_cocFieldCoordinates['workTypeAlteration']!['x']}, ${_cocFieldCoordinates['workTypeAlteration']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['workTypeAlteration']!['x']!,
+            _cocFieldCoordinates['workTypeAlteration']!['y']!);
       }
       if (_workType == 'New Work') {
-        print('Drawing amazing tick mark for New Work at ${_cocFieldCoordinates['workTypeNewWork']!['x']}, ${_cocFieldCoordinates['workTypeNewWork']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['workTypeNewWork']!['x']!, _cocFieldCoordinates['workTypeNewWork']!['y']!);
+        print(
+            'Drawing amazing tick mark for New Work at ${_cocFieldCoordinates['workTypeNewWork']!['x']}, ${_cocFieldCoordinates['workTypeNewWork']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['workTypeNewWork']!['x']!,
+            _cocFieldCoordinates['workTypeNewWork']!['y']!);
       }
-      
+
       // Risk Level Checkboxes - Amazing visible tick marks! (Only draw if selected)
       if (_riskLevel == 'Low Risk') {
-        print('Drawing amazing tick mark for Low Risk at ${_cocFieldCoordinates['riskLevelLow']!['x']}, ${_cocFieldCoordinates['riskLevelLow']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['riskLevelLow']!['x']!, _cocFieldCoordinates['riskLevelLow']!['y']!);
+        print(
+            'Drawing amazing tick mark for Low Risk at ${_cocFieldCoordinates['riskLevelLow']!['x']}, ${_cocFieldCoordinates['riskLevelLow']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['riskLevelLow']!['x']!,
+            _cocFieldCoordinates['riskLevelLow']!['y']!);
       }
       if (_riskLevel == 'General') {
-        print('Drawing amazing tick mark for General at ${_cocFieldCoordinates['riskLevelGeneral']!['x']}, ${_cocFieldCoordinates['riskLevelGeneral']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['riskLevelGeneral']!['x']!, _cocFieldCoordinates['riskLevelGeneral']!['y']!);
+        print(
+            'Drawing amazing tick mark for General at ${_cocFieldCoordinates['riskLevelGeneral']!['x']}, ${_cocFieldCoordinates['riskLevelGeneral']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['riskLevelGeneral']!['x']!,
+            _cocFieldCoordinates['riskLevelGeneral']!['y']!);
       }
       if (_riskLevel == 'High Risk') {
-        print('Drawing amazing tick mark for High Risk at ${_cocFieldCoordinates['riskLevelHigh']!['x']}, ${_cocFieldCoordinates['riskLevelHigh']!['y']}');
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['riskLevelHigh']!['x']!, _cocFieldCoordinates['riskLevelHigh']!['y']!);
-        
+        print(
+            'Drawing amazing tick mark for High Risk at ${_cocFieldCoordinates['riskLevelHigh']!['x']}, ${_cocFieldCoordinates['riskLevelHigh']!['y']}');
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['riskLevelHigh']!['x']!,
+            _cocFieldCoordinates['riskLevelHigh']!['y']!);
+
         // High Risk specify text
         if (_highRiskSpecifyController.text.isNotEmpty) {
           graphics.drawString(
             _highRiskSpecifyController.text,
             font9,
             brush: blackBrush,
-            bounds: Rect.fromLTWH(_cocFieldCoordinates['highRiskSpecify']!['x']!, 
-                                  _cocFieldCoordinates['highRiskSpecify']!['y']!, 
-                                  200, 20),
+            bounds: Rect.fromLTWH(
+                _cocFieldCoordinates['highRiskSpecify']!['x']!,
+                _cocFieldCoordinates['highRiskSpecify']!['y']!,
+                200,
+                20),
           );
         }
       }
-      
+
       // Supervised Person
       if (_supervisedPersonController.text.isNotEmpty) {
         graphics.drawString(
           _supervisedPersonController.text,
           font9,
           brush: blackBrush,
-          bounds: Rect.fromLTWH(_cocFieldCoordinates['supervisedPerson']!['x']!, 
-                                _cocFieldCoordinates['supervisedPerson']!['y']!, 
-                                200, 20),
+          bounds: Rect.fromLTWH(_cocFieldCoordinates['supervisedPerson']!['x']!,
+              _cocFieldCoordinates['supervisedPerson']!['y']!, 200, 20),
         );
       }
-      
+
       // Means of Compliance checkboxes
       if (_meansCompliancePart1) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['meansCompliancePart1']!['x']!, _cocFieldCoordinates['meansCompliancePart1']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['meansCompliancePart1']!['x']!,
+            _cocFieldCoordinates['meansCompliancePart1']!['y']!);
       }
       if (_meansCompliancePart2) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['meansCompliancePart2']!['x']!, _cocFieldCoordinates['meansCompliancePart2']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['meansCompliancePart2']!['x']!,
+            _cocFieldCoordinates['meansCompliancePart2']!['y']!);
       }
-      
+
       // Additional Standards checkboxes
       if (_additionalStandardsNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['additionalStandardsNo']!['x']!, _cocFieldCoordinates['additionalStandardsNo']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['additionalStandardsNo']!['x']!,
+            _cocFieldCoordinates['additionalStandardsNo']!['y']!);
       }
       if (_additionalStandardsYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['additionalStandardsYes']!['x']!, _cocFieldCoordinates['additionalStandardsYes']!['y']!);
-        
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['additionalStandardsYes']!['x']!,
+            _cocFieldCoordinates['additionalStandardsYes']!['y']!);
+
         // Additional standards specify text
         if (_additionalStandardsSpecifyController.text.isNotEmpty) {
           graphics.drawString(
             _additionalStandardsSpecifyController.text,
             font8,
             brush: blackBrush,
-            bounds: Rect.fromLTWH(_cocFieldCoordinates['additionalStandardsSpecify']!['x']!, 
-                                  _cocFieldCoordinates['additionalStandardsSpecify']!['y']!, 
-                                  _cocFieldCoordinates['additionalStandardsSpecify']!['width']!,
-                                  _cocFieldCoordinates['additionalStandardsSpecify']!['height']!),
+            bounds: Rect.fromLTWH(
+                _cocFieldCoordinates['additionalStandardsSpecify']!['x']!,
+                _cocFieldCoordinates['additionalStandardsSpecify']!['y']!,
+                _cocFieldCoordinates['additionalStandardsSpecify']!['width']!,
+                _cocFieldCoordinates['additionalStandardsSpecify']!['height']!),
           );
         }
       }
-      
+
       // Range of Dates
       graphics.drawString(
         _rangeDatesController.text,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['rangeDates']!['x']!, 
-                              _cocFieldCoordinates['rangeDates']!['y']!, 
-                              150, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['rangeDates']!['x']!,
+            _cocFieldCoordinates['rangeDates']!['y']!, 150, 20),
       );
-      
+
       // Fittings Safe to Connect
       if (_fittingsSafeYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['fittingsSafeYes']!['x']!, _cocFieldCoordinates['fittingsSafeYes']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['fittingsSafeYes']!['x']!,
+            _cocFieldCoordinates['fittingsSafeYes']!['y']!);
       }
       if (_fittingsSafeNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['fittingsSafeNo']!['x']!, _cocFieldCoordinates['fittingsSafeNo']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['fittingsSafeNo']!['x']!,
+            _cocFieldCoordinates['fittingsSafeNo']!['y']!);
       }
-      
+
       // Supply System
       graphics.drawString(
         _supplySystem,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['supplySystem']!['x']!, 
-                              _cocFieldCoordinates['supplySystem']!['y']!, 
-                              200, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['supplySystem']!['x']!,
+            _cocFieldCoordinates['supplySystem']!['y']!, 200, 20),
       );
-      
+
       // Earth System
       if (_earthSystemYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['earthSystemYes']!['x']!, _cocFieldCoordinates['earthSystemYes']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['earthSystemYes']!['x']!,
+            _cocFieldCoordinates['earthSystemYes']!['y']!);
       }
       if (_earthSystemNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['earthSystemNo']!['x']!, _cocFieldCoordinates['earthSystemNo']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['earthSystemNo']!['x']!,
+            _cocFieldCoordinates['earthSystemNo']!['y']!);
       }
-      
+
       // Certificate Relates To
       if (_certificateAll) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['certificateAll']!['x']!, _cocFieldCoordinates['certificateAll']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['certificateAll']!['x']!,
+            _cocFieldCoordinates['certificateAll']!['y']!);
       }
       if (_certificateParts) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['certificateParts']!['x']!, _cocFieldCoordinates['certificateParts']!['y']!);
-        
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['certificateParts']!['x']!,
+            _cocFieldCoordinates['certificateParts']!['y']!);
+
         // Parts specify text
         if (_partsSpecifyController.text.isNotEmpty) {
           graphics.drawString(
             _partsSpecifyController.text,
             font9,
             brush: blackBrush,
-            bounds: Rect.fromLTWH(_cocFieldCoordinates['partsSpecify']!['x']!, 
-                                  _cocFieldCoordinates['partsSpecify']!['y']!, 
-                                  200, 20),
+            bounds: Rect.fromLTWH(_cocFieldCoordinates['partsSpecify']!['x']!,
+                _cocFieldCoordinates['partsSpecify']!['y']!, 200, 20),
           );
         }
       }
-      
+
       // Manufacturer Instructions
       if (_manufacturerInstructionsYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['manufacturerInstructionsYes']!['x']!, _cocFieldCoordinates['manufacturerInstructionsYes']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['manufacturerInstructionsYes']!['x']!,
+            _cocFieldCoordinates['manufacturerInstructionsYes']!['y']!);
       }
       if (_manufacturerInstructionsNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['manufacturerInstructionsNo']!['x']!, _cocFieldCoordinates['manufacturerInstructionsNo']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['manufacturerInstructionsNo']!['x']!,
+            _cocFieldCoordinates['manufacturerInstructionsNo']!['y']!);
       }
-      
+
       // Manufacturer Instructions Link
       if (_manufacturerInstructionsController.text.isNotEmpty) {
         graphics.drawString(
           _manufacturerInstructionsController.text,
           font8,
           brush: blackBrush,
-          bounds: Rect.fromLTWH(_cocFieldCoordinates['manufacturerInstructionsLink']!['x']!, 
-                                _cocFieldCoordinates['manufacturerInstructionsLink']!['y']!, 
-                                300, 20),
+          bounds: Rect.fromLTWH(
+              _cocFieldCoordinates['manufacturerInstructionsLink']!['x']!,
+              _cocFieldCoordinates['manufacturerInstructionsLink']!['y']!,
+              300,
+              20),
         );
       }
-      
+
       // Certified Design
       if (_certifiedDesignYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['certifiedDesignYes']!['x']!, _cocFieldCoordinates['certifiedDesignYes']!['y']!);
-        
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['certifiedDesignYes']!['x']!,
+            _cocFieldCoordinates['certifiedDesignYes']!['y']!);
+
         // Certified Design Link
         if (_certifiedDesignController.text.isNotEmpty) {
           graphics.drawString(
             _certifiedDesignController.text,
             font8,
             brush: blackBrush,
-            bounds: Rect.fromLTWH(_cocFieldCoordinates['certifiedDesignLink']!['x']!, 
-                                  _cocFieldCoordinates['certifiedDesignLink']!['y']!, 
-                                  300, 20),
+            bounds: Rect.fromLTWH(
+                _cocFieldCoordinates['certifiedDesignLink']!['x']!,
+                _cocFieldCoordinates['certifiedDesignLink']!['y']!,
+                300,
+                20),
           );
         }
       }
       if (_certifiedDesignNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['certifiedDesignNo']!['x']!, _cocFieldCoordinates['certifiedDesignNo']!['y']!);
+        _drawAmazingTickMark(
+            graphics,
+            _cocFieldCoordinates['certifiedDesignNo']!['x']!,
+            _cocFieldCoordinates['certifiedDesignNo']!['y']!);
       }
-      
+
       // SDoC
       if (_sdocYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['sdocYes']!['x']!, _cocFieldCoordinates['sdocYes']!['y']!);
-        
+        _drawAmazingTickMark(graphics, _cocFieldCoordinates['sdocYes']!['x']!,
+            _cocFieldCoordinates['sdocYes']!['y']!);
+
         // SDoC Link
         if (_sdocLinkController.text.isNotEmpty) {
           graphics.drawString(
             _sdocLinkController.text,
             font8,
             brush: blackBrush,
-            bounds: Rect.fromLTWH(_cocFieldCoordinates['sdocLink']!['x']!, 
-                                  _cocFieldCoordinates['sdocLink']!['y']!, 
-                                  300, 20),
+            bounds: Rect.fromLTWH(_cocFieldCoordinates['sdocLink']!['x']!,
+                _cocFieldCoordinates['sdocLink']!['y']!, 300, 20),
           );
         }
       }
       if (_sdocNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['sdocNo']!['x']!, _cocFieldCoordinates['sdocNo']!['y']!);
+        _drawAmazingTickMark(graphics, _cocFieldCoordinates['sdocNo']!['x']!,
+            _cocFieldCoordinates['sdocNo']!['y']!);
       }
-      
+
       // Installation Testing
       if (_testedYes) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['testedYes']!['x']!, _cocFieldCoordinates['testedYes']!['y']!);
+        _drawAmazingTickMark(graphics, _cocFieldCoordinates['testedYes']!['x']!,
+            _cocFieldCoordinates['testedYes']!['y']!);
       }
       if (_testedNo) {
-        _drawAmazingTickMark(graphics, _cocFieldCoordinates['testedNo']!['x']!, _cocFieldCoordinates['testedNo']!['y']!);
+        _drawAmazingTickMark(graphics, _cocFieldCoordinates['testedNo']!['x']!,
+            _cocFieldCoordinates['testedNo']!['y']!);
       }
-      
+
       // Polarity Correct
       if (_polarityCorrect) {
         graphics.drawString(
           'Correct',
           font9,
           brush: blackBrush,
-          bounds: Rect.fromLTWH(_cocFieldCoordinates['polarityCorrect']!['x']!, 
-                                _cocFieldCoordinates['polarityCorrect']!['y']!, 
-                                100, 20),
+          bounds: Rect.fromLTWH(_cocFieldCoordinates['polarityCorrect']!['x']!,
+              _cocFieldCoordinates['polarityCorrect']!['y']!, 100, 20),
         );
       }
-      
+
       // Work Description
       graphics.drawString(
         _workDescriptionController.text,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['workDescription']!['x']!, 
-                              _cocFieldCoordinates['workDescription']!['y']!, 
-                              _cocFieldCoordinates['workDescription']!['width']!, 
-                              _cocFieldCoordinates['workDescription']!['height']!),
-        format: sfpdf.PdfStringFormat(lineAlignment: sfpdf.PdfVerticalAlignment.top, wordWrap: sfpdf.PdfWordWrapType.word),
+        bounds: Rect.fromLTWH(
+            _cocFieldCoordinates['workDescription']!['x']!,
+            _cocFieldCoordinates['workDescription']!['y']!,
+            _cocFieldCoordinates['workDescription']!['width']!,
+            _cocFieldCoordinates['workDescription']!['height']!),
+        format: sfpdf.PdfStringFormat(
+            lineAlignment: sfpdf.PdfVerticalAlignment.top,
+            wordWrap: sfpdf.PdfWordWrapType.word),
       );
-      
+
       // User Information
       graphics.drawString(
         _userNameController.text,
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['userName']!['x']!, 
-                              _cocFieldCoordinates['userName']!['y']!, 
-                              150, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['userName']!['x']!,
+            _cocFieldCoordinates['userName']!['y']!, 150, 20),
       );
-      
+
       // Second user name location
       graphics.drawString(
         _userNameController.text,
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['userName2']!['x']!, 
-                              _cocFieldCoordinates['userName2']!['y']!, 
-                              150, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['userName2']!['x']!,
+            _cocFieldCoordinates['userName2']!['y']!, 150, 20),
       );
-      
+
       graphics.drawString(
         _userLicenseController.text,
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['userLicense']!['x']!, 
-                              _cocFieldCoordinates['userLicense']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['userLicense']!['x']!,
+            _cocFieldCoordinates['userLicense']!['y']!, 100, 20),
       );
-      
+
       // Second user license location
       graphics.drawString(
         _userLicenseController.text,
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['userLicense2']!['x']!, 
-                              _cocFieldCoordinates['userLicense2']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['userLicense2']!['x']!,
+            _cocFieldCoordinates['userLicense2']!['y']!, 100, 20),
       );
-      
+
       // User Signatures at both locations
       // Use actual signature image if available, otherwise fallback to name
-      await _drawUserSignature(graphics, _cocFieldCoordinates['userSignature1']!['x']!, _cocFieldCoordinates['userSignature1']!['y']!);
-      
-      await _drawUserSignature(graphics, _cocFieldCoordinates['userSignature2']!['x']!, _cocFieldCoordinates['userSignature2']!['y']!);
-      
+      await _drawUserSignature(
+          graphics,
+          _cocFieldCoordinates['userSignature1']!['x']!,
+          _cocFieldCoordinates['userSignature1']!['y']!);
+
+      await _drawUserSignature(
+          graphics,
+          _cocFieldCoordinates['userSignature2']!['x']!,
+          _cocFieldCoordinates['userSignature2']!['y']!);
+
       // Test Results with proper unit formatting
       graphics.drawString(
-        _insulationResistanceController.text.isNotEmpty 
-          ? '${_insulationResistanceController.text} MΩ' 
-          : '',
+        _insulationResistanceController.text.isNotEmpty
+            ? '${_insulationResistanceController.text} MΩ'
+            : '',
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['insulationResistance']!['x']!, 
-                              _cocFieldCoordinates['insulationResistance']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(
+            _cocFieldCoordinates['insulationResistance']!['x']!,
+            _cocFieldCoordinates['insulationResistance']!['y']!,
+            100,
+            20),
       );
-      
+
       graphics.drawString(
-        _earthContinuityController.text.isNotEmpty 
-          ? '${_earthContinuityController.text} Ω' 
-          : '',
+        _earthContinuityController.text.isNotEmpty
+            ? '${_earthContinuityController.text} Ω'
+            : '',
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['earthContinuity']!['x']!, 
-                              _cocFieldCoordinates['earthContinuity']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['earthContinuity']!['x']!,
+            _cocFieldCoordinates['earthContinuity']!['y']!, 100, 20),
       );
-      
+
       graphics.drawString(
-        _bondingController.text.isNotEmpty 
-          ? '${_bondingController.text} Ω' 
-          : '',
+        _bondingController.text.isNotEmpty
+            ? '${_bondingController.text} Ω'
+            : '',
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['bonding']!['x']!, 
-                              _cocFieldCoordinates['bonding']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['bonding']!['x']!,
+            _cocFieldCoordinates['bonding']!['y']!, 100, 20),
       );
-      
+
       graphics.drawString(
-        _faultLoopController.text.isNotEmpty 
-          ? '${_faultLoopController.text} Ω' 
-          : '',
+        _faultLoopController.text.isNotEmpty
+            ? '${_faultLoopController.text} Ω'
+            : '',
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['faultLoop']!['x']!, 
-                              _cocFieldCoordinates['faultLoop']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['faultLoop']!['x']!,
+            _cocFieldCoordinates['faultLoop']!['y']!, 100, 20),
       );
-      
+
       graphics.drawString(
         _otherController.text,
         font9,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['otherTests']!['x']!, 
-                              _cocFieldCoordinates['otherTests']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['otherTests']!['x']!,
+            _cocFieldCoordinates['otherTests']!['y']!, 100, 20),
       );
-      
+
       // Dates
       graphics.drawString(
         DateFormat('dd/MM/yyyy').format(_signDate),
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['signDate']!['x']!, 
-                              _cocFieldCoordinates['signDate']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['signDate']!['x']!,
+            _cocFieldCoordinates['signDate']!['y']!, 100, 20),
       );
-      
+
       // Second sign date location
       graphics.drawString(
         DateFormat('dd/MM/yyyy').format(_signDate),
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['signDate2']!['x']!, 
-                              _cocFieldCoordinates['signDate2']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['signDate2']!['x']!,
+            _cocFieldCoordinates['signDate2']!['y']!, 100, 20),
       );
-      
+
       graphics.drawString(
         DateFormat('dd/MM/yyyy').format(_connectionDate),
         font10,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['connectionDate']!['x']!, 
-                              _cocFieldCoordinates['connectionDate']!['y']!, 
-                              100, 20),
+        bounds: Rect.fromLTWH(_cocFieldCoordinates['connectionDate']!['x']!,
+            _cocFieldCoordinates['connectionDate']!['y']!, 100, 20),
       );
-      
+
       // Contact Information
-      final phoneEmailText = '${_userPhoneController.text} ${_userEmailController.text}';
+      final phoneEmailText =
+          '${_userPhoneController.text} ${_userEmailController.text}';
       graphics.drawString(
         phoneEmailText,
         font8,
         brush: blackBrush,
-        bounds: Rect.fromLTWH(_cocFieldCoordinates['phoneEmail']!['x']!, 
-                              _cocFieldCoordinates['phoneEmail']!['y']!, 
-                              _cocFieldCoordinates['phoneEmail']!['width']!, 
-                              _cocFieldCoordinates['phoneEmail']!['height']!),
-        format: sfpdf.PdfStringFormat(lineAlignment: sfpdf.PdfVerticalAlignment.top, wordWrap: sfpdf.PdfWordWrapType.word),
+        bounds: Rect.fromLTWH(
+            _cocFieldCoordinates['phoneEmail']!['x']!,
+            _cocFieldCoordinates['phoneEmail']!['y']!,
+            _cocFieldCoordinates['phoneEmail']!['width']!,
+            _cocFieldCoordinates['phoneEmail']!['height']!),
+        format: sfpdf.PdfStringFormat(
+            lineAlignment: sfpdf.PdfVerticalAlignment.top,
+            wordWrap: sfpdf.PdfWordWrapType.word),
       );
 
       // Generate standardized filename using the naming service
@@ -833,19 +939,21 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
 
       final directory = await getApplicationDocumentsDirectory();
       final file = File('${directory.path}/$fileName');
-      
+
       // Save the modified PDF
       final List<int> bytes = await existingDocument.save();
       await file.writeAsBytes(bytes);
-      
+
       // Dispose the document
       existingDocument.dispose();
 
       // Add PDF to job attachments
-      widget.job.attachments ??= [];
-      if (!widget.job.attachments!.contains(file.path)) {
-        widget.job.attachments!.add(file.path);
-      }
+      setState(() {
+        widget.job.attachments ??= [];
+        if (!widget.job.attachments!.contains(file.path)) {
+          widget.job.attachments!.add(file.path);
+        }
+      });
 
       // Save the job to persist the attachment
       await _saveJob();
@@ -854,7 +962,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('COC EWRB PDF generated and saved to job attachments!'),
+            content:
+                Text('COC EWRB PDF generated and saved to job attachments!'),
             backgroundColor: Colors.green,
             duration: const Duration(seconds: 2),
           ),
@@ -882,7 +991,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   // Method to show settings dialog for defaults
   Future<void> _showDefaultSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     await showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -891,23 +1000,28 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Set default values for COC form fields:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Set default values for COC form fields:',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 16),
-              
+
               // Supervised Person Default
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 decoration: const InputDecoration(
                   labelText: 'Default Supervised Person',
                   border: OutlineInputBorder(),
                 ),
-                controller: TextEditingController(text: prefs.getString('default_supervised_person') ?? ''),
-                onChanged: (value) => prefs.setString('default_supervised_person', value),
+                controller: TextEditingController(
+                    text: prefs.getString('default_supervised_person') ?? ''),
+                onChanged: (value) =>
+                    prefs.setString('default_supervised_person', value),
               ),
               const SizedBox(height: 16),
-              
+
               // Default Risk Level
               DropdownButtonFormField<String>(
-                initialValue: prefs.getString('default_risk_level') ?? 'General',
+                initialValue:
+                    prefs.getString('default_risk_level') ?? 'General',
                 decoration: const InputDecoration(
                   labelText: 'Default Risk Level',
                   border: OutlineInputBorder(),
@@ -915,144 +1029,180 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 items: const [
                   DropdownMenuItem(value: 'Low Risk', child: Text('Low Risk')),
                   DropdownMenuItem(value: 'General', child: Text('General')),
-                  DropdownMenuItem(value: 'High Risk', child: Text('High Risk')),
+                  DropdownMenuItem(
+                      value: 'High Risk', child: Text('High Risk')),
                 ],
-                onChanged: (value) => prefs.setString('default_risk_level', value!),
+                onChanged: (value) =>
+                    prefs.setString('default_risk_level', value!),
               ),
               const SizedBox(height: 16),
-              
+
               // Means of Compliance defaults
               CheckboxListTile(
-                title: const Text('Part 1 Default'),
+                title: const Text('Part 1'),
                 value: prefs.getBool('default_part1') ?? true,
                 onChanged: (value) => prefs.setBool('default_part1', value!),
               ),
-              
+
               CheckboxListTile(
                 title: const Text('Part 2 Default'),
                 value: prefs.getBool('default_part2') ?? false,
                 onChanged: (value) => prefs.setBool('default_part2', value!),
               ),
-              
+
               // Additional Standards Default
               CheckboxListTile(
                 title: const Text('Additional Standards - No (Default)'),
                 value: prefs.getBool('default_additional_standards_no') ?? true,
-                onChanged: (value) => prefs.setBool('default_additional_standards_no', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_additional_standards_no', value!),
               ),
-              
+
               // Fittings Safe Default
               CheckboxListTile(
                 title: const Text('Fittings Safe to Connect - Yes (Default)'),
                 value: prefs.getBool('default_fittings_safe') ?? true,
-                onChanged: (value) => prefs.setBool('default_fittings_safe', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_fittings_safe', value!),
               ),
-              
+
               // Supply System Default
               DropdownButtonFormField<String>(
-                initialValue: prefs.getString('default_supply_system') ?? 'Low Voltage (230/400v)',
+                initialValue: prefs.getString('default_supply_system') ??
+                    'Low Voltage (230/400v)',
                 decoration: const InputDecoration(
                   labelText: 'Default Supply System',
                   border: OutlineInputBorder(),
                 ),
                 items: const [
-                  DropdownMenuItem(value: 'Low Voltage (230/400v)', child: Text('Low Voltage (230/400v)')),
-                  DropdownMenuItem(value: 'Medium Voltage', child: Text('Medium Voltage')),
-                  DropdownMenuItem(value: 'High Voltage', child: Text('High Voltage')),
+                  DropdownMenuItem(
+                      value: 'Low Voltage (230/400v)',
+                      child: Text('Low Voltage (230/400v)')),
+                  DropdownMenuItem(
+                      value: 'Medium Voltage', child: Text('Medium Voltage')),
+                  DropdownMenuItem(
+                      value: 'High Voltage', child: Text('High Voltage')),
                 ],
-                onChanged: (value) => prefs.setString('default_supply_system', value!),
+                onChanged: (value) =>
+                    prefs.setString('default_supply_system', value!),
               ),
               const SizedBox(height: 16),
-              
+
               // Earth System Default
               CheckboxListTile(
-                title: const Text('Earth System Correctly Rated - Yes (Default)'),
+                title:
+                    const Text('Earth System Correctly Rated - Yes (Default)'),
                 value: prefs.getBool('default_earth_system') ?? true,
-                onChanged: (value) => prefs.setBool('default_earth_system', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_earth_system', value!),
               ),
-              
+
               // Certificate Relates To Default
               CheckboxListTile(
                 title: const Text('Certificate Relates to Parts (Default)'),
                 value: prefs.getBool('default_certificate_parts') ?? true,
-                onChanged: (value) => prefs.setBool('default_certificate_parts', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_certificate_parts', value!),
               ),
-              
+
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 decoration: const InputDecoration(
                   labelText: 'Default Parts Specify Text',
                   border: OutlineInputBorder(),
                 ),
-                controller: TextEditingController(text: prefs.getString('default_parts_specify') ?? 'Notes in the description'),
-                onChanged: (value) => prefs.setString('default_parts_specify', value),
+                controller: TextEditingController(
+                    text: prefs.getString('default_parts_specify') ??
+                        'Notes in the description'),
+                onChanged: (value) =>
+                    prefs.setString('default_parts_specify', value),
               ),
               const SizedBox(height: 16),
-              
+
               // Manufacturer Instructions Default
               CheckboxListTile(
-                title: const Text('Work Relies on Manufacturer Instructions - Yes (Default)'),
-                value: prefs.getBool('default_manufacturer_instructions') ?? true,
-                onChanged: (value) => prefs.setBool('default_manufacturer_instructions', value!),
+                title: const Text(
+                    'Work Relies on Manufacturer Instructions - Yes (Default)'),
+                value:
+                    prefs.getBool('default_manufacturer_instructions') ?? true,
+                onChanged: (value) =>
+                    prefs.setBool('default_manufacturer_instructions', value!),
               ),
-              
+
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 decoration: const InputDecoration(
-                  labelText: 'Default Main Supplier URL (for SDoC & Manufacturer Instructions)',
+                  labelText:
+                      'Default Main Supplier URL (for SDoC & Manufacturer Instructions)',
                   border: OutlineInputBorder(),
-                  helperText: 'This URL will be used for both SDoC and Manufacturer Instructions',
+                  helperText:
+                      'This URL will be used for both SDoC and Manufacturer Instructions',
                 ),
-                controller: TextEditingController(text: prefs.getString('main_supplier_link') ?? ''),
-                onChanged: (value) => prefs.setString('main_supplier_link', value),
+                controller: TextEditingController(
+                    text: prefs.getString('main_supplier_link') ?? ''),
+                onChanged: (value) =>
+                    prefs.setString('main_supplier_link', value),
               ),
               const SizedBox(height: 16),
-              
+
               // Certified Design Default
               CheckboxListTile(
                 title: const Text('Certified Design - No (Default)'),
                 value: prefs.getBool('default_certified_design_no') ?? true,
-                onChanged: (value) => prefs.setBool('default_certified_design_no', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_certified_design_no', value!),
               ),
-              
+
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 decoration: const InputDecoration(
                   labelText: 'Default Design Link',
                   border: OutlineInputBorder(),
                 ),
-                controller: TextEditingController(text: prefs.getString('default_design_link') ?? ''),
-                onChanged: (value) => prefs.setString('default_design_link', value),
+                controller: TextEditingController(
+                    text: prefs.getString('default_design_link') ?? ''),
+                onChanged: (value) =>
+                    prefs.setString('default_design_link', value),
               ),
               const SizedBox(height: 16),
-              
+
               // SDoC Default
               CheckboxListTile(
                 title: const Text('Relies on SDoC - No (Default)'),
                 value: prefs.getBool('default_sdoc_no') ?? true,
                 onChanged: (value) => prefs.setBool('default_sdoc_no', value!),
               ),
-              
+
               // Installation Testing Default
               CheckboxListTile(
-                title: const Text('Installation Satisfactorily Tested - Yes (Default)'),
+                title: const Text(
+                    'Installation Satisfactorily Tested - Yes (Default)'),
                 value: prefs.getBool('default_tested_yes') ?? true,
-                onChanged: (value) => prefs.setBool('default_tested_yes', value!),
+                onChanged: (value) =>
+                    prefs.setBool('default_tested_yes', value!),
               ),
-              
+
               const SizedBox(height: 24),
               const Divider(),
-              const Text('Field Layout Options', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const Text('Field Layout Options',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               const SizedBox(height: 16),
-              
+
               // Field placement setting
               CheckboxListTile(
-                title: const Text('Show detailed fields in Expanded Information area'),
-                subtitle: const Text('When checked, Reference Number, Site Address, User details, Customer Name & Address, and Supervised Person will appear in the expandable section'),
+                title: const Text(
+                    'Show detailed fields in Expanded Information area'),
+                subtitle: const Text(
+                    'When checked, Reference Number, Site Address, User details, Customer Name & Address, and Supervised Person will appear in the expandable section'),
                 value: prefs.getBool('use_expanded_info_section') ?? true,
-                onChanged: (value) => prefs.setBool('use_expanded_info_section', value!),
+                onChanged: (value) =>
+                    prefs.setBool('use_expanded_info_section', value!),
               ),
-              
+
               const SizedBox(height: 16),
-              const Text('Note: These defaults will be pre-filled but can be changed in each form.', 
-                style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+              const Text(
+                  'Note: These defaults will be pre-filled but can be changed in each form.',
+                  style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
             ],
           ),
         ),
@@ -1079,24 +1229,27 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   // Save job method with hybrid storage integration
   Future<void> _saveJob() async {
     try {
-      // Save to local file for backward compatibility
+      // Persist using the shared Job save path so main job index and local job archive are updated.
+      await widget.job.save();
+
+      // Keep the legacy individual job JSON file for backward compatibility.
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/job_${widget.job.id}.json');
       await file.writeAsString(jsonEncode(widget.job.toJson()));
-      
-      // Save to cloud using hybrid storage system
-      await FirestoreService.saveJob(widget.job);
-      
-      // Trigger sync through scheduler for optimal cloud sync
-      await SyncScheduler.syncNow(DataType.jobs);
-      
+
       setState(() {
         _hasUnsavedChanges = false;
       });
-      
+
+      // Try to sync to cloud, but ignore errors.
+      try {
+        await FirestoreService.saveJob(widget.job);
+        await SyncScheduler.syncNow(DataType.jobs);
+      } catch (e) {
+        print('Cloud sync failed: $e');
+      }
     } catch (e) {
-      print('Error saving job: $e');
-      // Still show success for local save even if cloud fails
+      print('Error saving job locally: $e');
     }
   }
 
@@ -1119,7 +1272,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   // Trainee management method
   Future<void> _showTraineeManagement() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     await showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1128,42 +1281,43 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Current Company Trainees:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Current Company Trainees:',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 16),
-              
               if (_companyTrainees.isEmpty)
-                const Text('No trainees added yet.', style: TextStyle(fontStyle: FontStyle.italic)),
-              
+                const Text('No trainees added yet.',
+                    style: TextStyle(fontStyle: FontStyle.italic)),
               ..._companyTrainees.map((trainee) => ListTile(
-                title: Text(trainee),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  onPressed: () {
-                    setState(() {
-                      _companyTrainees.remove(trainee);
-                      prefs.setStringList('company_trainees', _companyTrainees);
-                    });
-                    Navigator.pop(context);
-                    _showTraineeManagement(); // Refresh dialog
-                  },
-                ),
-              )),
-              
+                    title: Text(trainee),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        setState(() {
+                          _companyTrainees.remove(trainee);
+                          prefs.setStringList(
+                              'company_trainees', _companyTrainees);
+                        });
+                        Navigator.pop(context);
+                        _showTraineeManagement(); // Refresh dialog
+                      },
+                    ),
+                  )),
               const SizedBox(height: 16),
               const Divider(),
               const SizedBox(height: 16),
-              
-              const Text('Add New Trainee:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Add New Trainee:',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              
               TextFormField(
+                textCapitalization: TextCapitalization.sentences,
                 decoration: const InputDecoration(
                   labelText: 'Trainee Name and Registration',
                   border: OutlineInputBorder(),
                   hintText: 'e.g., John Smith - REG123456',
                 ),
                 onFieldSubmitted: (value) {
-                  if (value.trim().isNotEmpty && !_companyTrainees.contains(value.trim())) {
+                  if (value.trim().isNotEmpty &&
+                      !_companyTrainees.contains(value.trim())) {
                     setState(() {
                       _companyTrainees.add(value.trim());
                       prefs.setStringList('company_trainees', _companyTrainees);
@@ -1173,10 +1327,9 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                   }
                 },
               ),
-              
               const SizedBox(height: 16),
-              const Text('Press Enter to add trainee', 
-                style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+              const Text('Press Enter to add trainee',
+                  style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
             ],
           ),
         ),
@@ -1345,12 +1498,13 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             if (_useExpandedInfoSection) ...[
               // Expanded Information section
               ExpansionTile(
-                title: const Text('Expanded Information', style: TextStyle(fontWeight: FontWeight.bold)),
+                title: const Text('Expanded Information',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 initiallyExpanded: false,
                 children: [
                   const SizedBox(height: 8),
                   _buildDetailedFields(),
-                  
+
                   // Signature placeholder
                   Container(
                     height: 100,
@@ -1360,9 +1514,9 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: const Center(
-                      child: Text('Signature Area\n(Auto-filled from settings)', 
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey)),
+                      child: Text('Signature Area\n(Auto-filled from settings)',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey)),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1385,6 +1539,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             // High Risk Specify (conditional)
             if (_riskLevel == 'High Risk') ...[
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _highRiskSpecifyController,
                 decoration: const InputDecoration(
                   labelText: 'Specify High Risk Details',
@@ -1404,6 +1559,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
 
             // Range of Dates
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               controller: _rangeDatesController,
               decoration: const InputDecoration(
                 labelText: 'Range of Dates',
@@ -1446,7 +1602,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             const SizedBox(height: 24),
 
             // Description of Work with Voice Text
-            const Text('Description of Work', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text('Description of Work',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             WebSpeechTextField(
               controller: _workDescriptionController,
@@ -1458,26 +1615,29 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             const SizedBox(height: 24),
 
             // Test Results Section
-            const Text('Test Results', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('Test Results',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            
+
             // Polarity Checkbox
             Row(
               children: [
                 Checkbox(
                   value: _polarityCorrect,
-                  onChanged: (value) => setState(() => _polarityCorrect = value!),
+                  onChanged: (value) =>
+                      setState(() => _polarityCorrect = value!),
                 ),
                 const Text('Polarity Correct'),
               ],
             ),
             const SizedBox(height: 16),
-            
+
             Row(
               children: [
                 Expanded(
                   flex: 3,
                   child: TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: _insulationResistanceController,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
@@ -1489,22 +1649,26 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Text('MΩ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text('MΩ',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            
+
             Row(
               children: [
                 Expanded(
                   flex: 3,
                   child: TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: _earthContinuityController,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
@@ -1516,22 +1680,26 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Text('Ω', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text('Ω',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            
+
             Row(
               children: [
                 Expanded(
                   flex: 3,
                   child: TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: _bondingController,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
@@ -1543,22 +1711,26 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Text('Ω', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text('Ω',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            
+
             Row(
               children: [
                 Expanded(
                   flex: 3,
                   child: TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: _faultLoopController,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
@@ -1570,17 +1742,20 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
                   decoration: BoxDecoration(
                     border: Border.all(color: Colors.grey),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Text('Ω', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text('Ω',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            
+
             TextField(
               controller: _otherController,
               textCapitalization: TextCapitalization.characters,
@@ -1596,9 +1771,10 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             const SizedBox(height: 24),
 
             // Date Section
-            const Text('Dates', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('Dates',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-            
+
             // Sign Date
             ListTile(
               title: const Text('Sign Date'),
@@ -1606,7 +1782,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
               trailing: const Icon(Icons.calendar_today),
               onTap: () => _selectDate(context, true),
             ),
-            
+
             // Connection Date
             ListTile(
               title: const Text('Connection Date'),
@@ -1628,11 +1804,9 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 ),
               ),
             ),
-
-            // Extra bottom padding for better mobile accessibility
             const SizedBox(height: 120),
           ],
-        ),
+        ), // Extra bottom padding for better mobile accessibility
       ),
     );
   }
@@ -1640,9 +1814,10 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
   /// Build detailed fields that can be shown in expanded section or main flow
   Widget _buildDetailedFields() {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Reference Number
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _referenceNumberController,
           decoration: const InputDecoration(
             labelText: 'Reference Number',
@@ -1650,9 +1825,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           ),
         ),
         const SizedBox(height: 16),
-
-        // Site Address
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _siteAddressController,
           decoration: const InputDecoration(
             labelText: 'Site Address',
@@ -1661,9 +1835,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           maxLines: 2,
         ),
         const SizedBox(height: 16),
-
-        // User Name
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _userNameController,
           decoration: const InputDecoration(
             labelText: 'User Name',
@@ -1671,9 +1844,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           ),
         ),
         const SizedBox(height: 16),
-
-        // User License
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _userLicenseController,
           decoration: const InputDecoration(
             labelText: 'User License',
@@ -1681,12 +1853,11 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           ),
         ),
         const SizedBox(height: 16),
-
-        // User Phone and Email
         Row(
           children: [
             Expanded(
               child: TextField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userPhoneController,
                 decoration: const InputDecoration(
                   labelText: 'Phone',
@@ -1697,6 +1868,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             const SizedBox(width: 16),
             Expanded(
               child: TextField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userEmailController,
                 decoration: const InputDecoration(
                   labelText: 'Email',
@@ -1707,20 +1879,18 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
           ],
         ),
         const SizedBox(height: 16),
-
-        // Customer Name and Address (if different to site address)
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _customerNameAddressController,
           decoration: const InputDecoration(
-            labelText: 'Customer Name and Address (if different to site address)',
+            labelText:
+                'Customer Name and Address (if different to site address)',
             border: OutlineInputBorder(),
             alignLabelWithHint: true,
           ),
           maxLines: 3,
         ),
         const SizedBox(height: 16),
-
-        // Supervised Person
         _buildSupervisedPersonField(),
         const SizedBox(height: 16),
       ],
@@ -1731,7 +1901,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Name and Registration Number of Person Supervised', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Name and Registration Number of Person Supervised',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -1744,10 +1915,12 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                   border: OutlineInputBorder(),
                 ),
                 items: [
-                  const DropdownMenuItem(value: '', child: Text('Select Trainee')),
-                  ..._companyTrainees.map((trainee) => 
-                    DropdownMenuItem(value: trainee, child: Text(trainee))),
-                  const DropdownMenuItem(value: 'custom', child: Text('Custom Entry')),
+                  const DropdownMenuItem(
+                      value: '', child: Text('Select Trainee')),
+                  ..._companyTrainees.map((trainee) =>
+                      DropdownMenuItem(value: trainee, child: Text(trainee))),
+                  const DropdownMenuItem(
+                      value: 'custom', child: Text('Custom Entry')),
                 ],
                 onChanged: (value) {
                   setState(() {
@@ -1779,6 +1952,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (_selectedTrainee == 'custom' || _selectedTrainee == '') ...[
           const SizedBox(height: 8),
           TextField(
+            textCapitalization: TextCapitalization.sentences,
             controller: _supervisedPersonController,
             decoration: const InputDecoration(
               labelText: 'Custom Supervised Person Details',
@@ -1795,7 +1969,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Means of Compliance', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Means of Compliance',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -1804,7 +1979,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 children: [
                   Checkbox(
                     value: _meansCompliancePart1,
-                    onChanged: (value) => setState(() => _meansCompliancePart1 = value!),
+                    onChanged: (value) =>
+                        setState(() => _meansCompliancePart1 = value!),
                   ),
                   const Text('Part 1', style: TextStyle(fontSize: 12)),
                 ],
@@ -1815,7 +1991,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
                 children: [
                   Checkbox(
                     value: _meansCompliancePart2,
-                    onChanged: (value) => setState(() => _meansCompliancePart2 = value!),
+                    onChanged: (value) =>
+                        setState(() => _meansCompliancePart2 = value!),
                   ),
                   const Text('Part 2', style: TextStyle(fontSize: 12)),
                 ],
@@ -1831,7 +2008,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Additional Standards', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Additional Standards',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -1868,6 +2046,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (_additionalStandardsYes) ...[
           const SizedBox(height: 8),
           TextField(
+            textCapitalization: TextCapitalization.sentences,
             controller: _additionalStandardsSpecifyController,
             decoration: const InputDecoration(
               labelText: 'Specify',
@@ -1883,7 +2062,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Fittings are safe to connect', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Fittings are safe to connect',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -1925,7 +2105,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Supply System', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Supply System',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         DropdownButtonFormField<String>(
           initialValue: _supplySystem,
@@ -1933,9 +2114,13 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
             border: OutlineInputBorder(),
           ),
           items: const [
-            DropdownMenuItem(value: 'Low Voltage (230/400v)', child: Text('Low Voltage (230/400v)')),
-            DropdownMenuItem(value: 'Medium Voltage', child: Text('Medium Voltage')),
-            DropdownMenuItem(value: 'High Voltage', child: Text('High Voltage')),
+            DropdownMenuItem(
+                value: 'Low Voltage (230/400v)',
+                child: Text('Low Voltage (230/400v)')),
+            DropdownMenuItem(
+                value: 'Medium Voltage', child: Text('Medium Voltage')),
+            DropdownMenuItem(
+                value: 'High Voltage', child: Text('High Voltage')),
           ],
           onChanged: (value) => setState(() => _supplySystem = value!),
         ),
@@ -1947,7 +2132,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Earth System is correctly rated', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Earth System is correctly rated',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -1989,7 +2175,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Certificate relates to as safe to connect', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Certificate relates to',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -2026,6 +2213,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (_certificateParts) ...[
           const SizedBox(height: 8),
           TextField(
+            textCapitalization: TextCapitalization.sentences,
             controller: _partsSpecifyController,
             decoration: const InputDecoration(
               labelText: 'Specify',
@@ -2041,7 +2229,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Work relies on manufacturer instructions', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Work relies on manufacturer instructions',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -2077,6 +2266,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         ),
         const SizedBox(height: 8),
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _manufacturerInstructionsController,
           decoration: const InputDecoration(
             labelText: 'Manufacturer Instructions Link',
@@ -2091,7 +2281,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Certified Design', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Certified Design',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -2128,6 +2319,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (_certifiedDesignYes) ...[
           const SizedBox(height: 8),
           TextField(
+            textCapitalization: TextCapitalization.sentences,
             controller: _certifiedDesignController,
             decoration: const InputDecoration(
               labelText: 'Identify/Link',
@@ -2143,7 +2335,8 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Relies on SDoC', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Relies on SDoC',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -2180,6 +2373,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (_sdocYes) ...[
           const SizedBox(height: 8),
           TextField(
+            textCapitalization: TextCapitalization.sentences,
             controller: _sdocLinkController,
             decoration: const InputDecoration(
               labelText: 'Link',
@@ -2195,7 +2389,9 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Installation satisfactorily tested in accordance with Electrical Regs', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text(
+            'Installation satisfactorily tested in accordance with Electrical Regs',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -2238,38 +2434,35 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
     // Create thick pens for bold, highly visible X mark
     final extraBoldPen = sfpdf.PdfPen(sfpdf.PdfColor(0, 0, 0), width: 4);
     final boldPen = sfpdf.PdfPen(sfpdf.PdfColor(0, 0, 0), width: 3);
-    
+
     // Draw main X lines with extra thickness
     graphics.drawLine(
-      extraBoldPen,
-      Offset(x, y),           // Top-left to bottom-right
-      Offset(x + 10, y + 10)
-    );
+        extraBoldPen,
+        Offset(x, y), // Top-left to bottom-right
+        Offset(x + 10, y + 10));
     graphics.drawLine(
-      extraBoldPen,
-      Offset(x + 10, y),      // Top-right to bottom-left  
-      Offset(x, y + 10)
-    );
-    
+        extraBoldPen,
+        Offset(x + 10, y), // Top-right to bottom-left
+        Offset(x, y + 10));
+
     // Add overlapping lines for maximum visibility
     graphics.drawLine(
-      boldPen,
-      Offset(x + 0.5, y),     // Slightly offset for extra thickness
-      Offset(x + 10.5, y + 10)
-    );
+        boldPen,
+        Offset(x + 0.5, y), // Slightly offset for extra thickness
+        Offset(x + 10.5, y + 10));
     graphics.drawLine(
-      boldPen,
-      Offset(x + 10.5, y),    // Slightly offset for extra thickness
-      Offset(x + 0.5, y + 10)
-    );
+        boldPen,
+        Offset(x + 10.5, y), // Slightly offset for extra thickness
+        Offset(x + 0.5, y + 10));
   }
 
   /// Draw user signature at specified coordinates
   /// Uses actual signature image if available, otherwise falls back to user name
-  Future<void> _drawUserSignature(sfpdf.PdfGraphics graphics, double x, double y) async {
+  Future<void> _drawUserSignature(
+      sfpdf.PdfGraphics graphics, double x, double y) async {
     final font10 = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
     final blackBrush = sfpdf.PdfSolidBrush(sfpdf.PdfColor(0, 0, 0));
-    
+
     if (_signaturePath != null && _signaturePath!.isNotEmpty) {
       try {
         // Load signature image
@@ -2277,12 +2470,13 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         if (await signatureFile.exists()) {
           final signatureBytes = await signatureFile.readAsBytes();
           final signatureImage = sfpdf.PdfBitmap(signatureBytes);
-          
+
           // Draw signature image with appropriate size
           graphics.drawImage(
-            signatureImage,
-            Rect.fromLTWH(x, y - 15, 120, 30) // Adjusted size and position for signature
-          );
+              signatureImage,
+              Rect.fromLTWH(x, y - 15, 120,
+                  30) // Adjusted size and position for signature
+              );
           return;
         }
       } catch (e) {
@@ -2290,7 +2484,7 @@ class _CocFormScreenState extends State<CocFormScreen> with DocumentNamingMixin 
         // Fall through to text fallback
       }
     }
-    
+
     // Fallback to drawing user name as text signature
     graphics.drawString(
       _userNameController.text,

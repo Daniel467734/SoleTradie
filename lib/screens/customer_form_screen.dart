@@ -26,6 +26,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
   final _phoneController = TextEditingController();
   final _addressController = TextEditingController();
   final _companyController = TextEditingController();
+  final _bodyCorporateController = TextEditingController();
   
   bool _isSubmitting = false;
   bool _isSubmitted = false;
@@ -37,6 +38,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
     _phoneController.dispose();
     _addressController.dispose();
     _companyController.dispose();
+    _bodyCorporateController.dispose();
     super.dispose();
   }
 
@@ -57,6 +59,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
         companyName: _companyController.text.trim().isEmpty 
           ? '' 
           : _companyController.text.trim(),
+        bodyCorporateNumber: _bodyCorporateController.text.trim(),
       );
 
       // Save to Firestore with enhanced sync integration
@@ -240,9 +243,18 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                 textCapitalization: TextCapitalization.words,
               ),
               const SizedBox(height: 16),
+            TextFormField(textCapitalization: TextCapitalization.sentences,
+              controller: _bodyCorporateController,
+              decoration: const InputDecoration(
+                labelText: 'Body Corporate Number (Optional)',
+                prefixIcon: Icon(Icons.account_balance),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
 
               // Email
-              TextFormField(
+              TextFormField(textCapitalization: TextCapitalization.sentences, 
                 controller: _emailController,
                 decoration: const InputDecoration(
                   labelText: 'Email Address *',
@@ -254,7 +266,8 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
                   if (value == null || value.trim().isEmpty) {
                     return 'Please enter your email address';
                   }
-                  if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
+                  // Simple email validation - just check for @ and .
+                  if (!value.contains('@') || !value.contains('.')) {
                     return 'Please enter a valid email address';
                   }
                   return null;
@@ -263,7 +276,7 @@ class _CustomerFormScreenState extends State<CustomerFormScreen> {
               const SizedBox(height: 16),
 
               // Phone
-              TextFormField(
+              TextFormField(textCapitalization: TextCapitalization.sentences, 
                 controller: _phoneController,
                 decoration: const InputDecoration(
                   labelText: 'Phone Number *',

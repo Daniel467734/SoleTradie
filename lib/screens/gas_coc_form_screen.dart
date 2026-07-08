@@ -26,7 +26,8 @@ class GasCocFormScreen extends StatefulWidget {
   State<GasCocFormScreen> createState() => _GasCocFormScreenState();
 }
 
-class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNamingMixin {
+class _GasCocFormScreenState extends State<GasCocFormScreen>
+    with DocumentNamingMixin {
   // Form controllers
   final _referenceNumberController = TextEditingController();
   final _siteAddressController = TextEditingController();
@@ -54,7 +55,8 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
   final _meterLocationController = TextEditingController();
 
   // Form state variables
-  String _workType = ''; // Installation, Alteration, Maintenance - No default selection
+  String _workType =
+      ''; // Installation, Alteration, Maintenance - No default selection
   String _riskLevel = ''; // Low Risk, General, High Risk - No default selection
   DateTime? _testStartDate;
   DateTime? _testEndDate;
@@ -115,10 +117,11 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
 
   Future<void> _loadFormData() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     setState(() {
       _userNameController.text = prefs.getString('gas_coc_user_name') ?? '';
-      _userLicenseController.text = prefs.getString('gas_fitting_license') ?? '';
+      _userLicenseController.text =
+          prefs.getString('gas_fitting_license') ?? '';
       _userPhoneController.text = prefs.getString('gas_coc_user_phone') ?? '';
       _userEmailController.text = prefs.getString('gas_coc_user_email') ?? '';
     });
@@ -126,7 +129,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
 
   Future<void> _saveFormData() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     await prefs.setString('gas_coc_user_name', _userNameController.text);
     await prefs.setString('gas_coc_user_license', _userLicenseController.text);
     await prefs.setString('gas_coc_user_phone', _userPhoneController.text);
@@ -136,7 +139,11 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
   void _autoFillFromJob() {
     setState(() {
       _siteAddressController.text = widget.job.address ?? '';
-      _customerNameAddressController.text = '${widget.job.customerName ?? ''}\n${widget.job.address ?? ''}';
+      final customerName = widget.job.documentCustomerName;
+      final address = widget.job.address ?? '';
+      _customerNameAddressController.text = [customerName, address]
+          .where((part) => part.trim().isNotEmpty)
+          .join('\n');
       _workDescriptionController.text = widget.job.description ?? '';
       _referenceNumberController.text = widget.job.id;
     });
@@ -145,7 +152,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
   Future<void> _selectDate(BuildContext context, bool isStartDate) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: isStartDate 
+      initialDate: isStartDate
           ? (_testStartDate ?? DateTime.now())
           : (_testEndDate ?? _testStartDate ?? DateTime.now()),
       firstDate: DateTime(2020),
@@ -166,14 +173,14 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
   void _updateDateRangeText() {
     final dateFormat = DateFormat('dd/MM/yyyy');
     String dateText = '';
-    
+
     if (_testStartDate != null) {
       dateText = dateFormat.format(_testStartDate!);
       if (_testEndDate != null) {
         dateText += ' - ${dateFormat.format(_testEndDate!)}';
       }
     }
-    
+
     _rangeDatesController.text = dateText;
   }
 
@@ -216,18 +223,20 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
       );
 
       // Load the Gas COC PDF template
-      final ByteData data = await rootBundle.load('assets/certificates/GAS COC and GAS SAFTEY NZ.pdf');
+      final ByteData data = await rootBundle
+          .load('assets/certificates/GAS COC and GAS SAFTEY NZ.pdf');
       final Uint8List bytes = data.buffer.asUint8List();
 
       // Create PDF document
       final sfpdf.PdfDocument document = sfpdf.PdfDocument(inputBytes: bytes);
       final sfpdf.PdfPage page = document.pages[0];
       final sfpdf.PdfGraphics graphics = page.graphics;
-      final sfpdf.PdfFont font = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
+      final sfpdf.PdfFont font =
+          sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
 
       // Note: These coordinates are placeholders - you'll need to adjust based on the actual Gas COC PDF
       // Fill in the form fields with appropriate coordinates
-      
+
       // Reference Number
       graphics.drawString(
         _referenceNumberController.text,
@@ -339,11 +348,10 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
 
       // Auto-return to job details with success indicator
       Navigator.pop(context, true);
-
     } catch (e) {
       // Close loading dialog if open
       Navigator.of(context).pop();
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error generating Gas COC: $e'),
@@ -385,11 +393,13 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.local_gas_station, color: Colors.orange),
+                              Icon(Icons.local_gas_station,
+                                  color: Colors.orange),
                               const SizedBox(width: 8),
                               const Text(
                                 'Gas Certificate of Compliance',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                style: TextStyle(
+                                    fontSize: 18, fontWeight: FontWeight.bold),
                               ),
                             ],
                           ),
@@ -411,6 +421,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                     icon: Icons.info_outline,
                     children: [
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _referenceNumberController,
                         decoration: const InputDecoration(
                           labelText: 'Reference Number *',
@@ -438,25 +449,33 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                     title: 'Work Classification',
                     icon: Icons.work_outline,
                     children: [
-                      const Text('Type of Work *', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const Text('Type of Work *',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
                         children: [
-                          _buildChoiceChip('Installation', _workType, (value) => setState(() => _workType = value)),
-                          _buildChoiceChip('Alteration', _workType, (value) => setState(() => _workType = value)),
-                          _buildChoiceChip('Maintenance', _workType, (value) => setState(() => _workType = value)),
+                          _buildChoiceChip('Installation', _workType,
+                              (value) => setState(() => _workType = value)),
+                          _buildChoiceChip('Alteration', _workType,
+                              (value) => setState(() => _workType = value)),
+                          _buildChoiceChip('Maintenance', _workType,
+                              (value) => setState(() => _workType = value)),
                         ],
                       ),
                       const SizedBox(height: 16),
-                      const Text('Risk Level *', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const Text('Risk Level *',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
                         children: [
-                          _buildChoiceChip('Low Risk', _riskLevel, (value) => setState(() => _riskLevel = value)),
-                          _buildChoiceChip('General', _riskLevel, (value) => setState(() => _riskLevel = value)),
-                          _buildChoiceChip('High Risk', _riskLevel, (value) => setState(() => _riskLevel = value)),
+                          _buildChoiceChip('Low Risk', _riskLevel,
+                              (value) => setState(() => _riskLevel = value)),
+                          _buildChoiceChip('General', _riskLevel,
+                              (value) => setState(() => _riskLevel = value)),
+                          _buildChoiceChip('High Risk', _riskLevel,
+                              (value) => setState(() => _riskLevel = value)),
                         ],
                       ),
                       const SizedBox(height: 16),
@@ -475,17 +494,21 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                     title: 'Gas Information',
                     icon: Icons.local_gas_station,
                     children: [
-                      const Text('Gas Type', style: TextStyle(fontWeight: FontWeight.w600)),
+                      const Text('Gas Type',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
                         children: [
-                          _buildChoiceChip('Natural Gas', _gasType, (value) => setState(() => _gasType = value)),
-                          _buildChoiceChip('LPG', _gasType, (value) => setState(() => _gasType = value)),
+                          _buildChoiceChip('Natural Gas', _gasType,
+                              (value) => setState(() => _gasType = value)),
+                          _buildChoiceChip('LPG', _gasType,
+                              (value) => setState(() => _gasType = value)),
                         ],
                       ),
                       const SizedBox(height: 16),
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _gasSupplierController,
                         decoration: const InputDecoration(
                           labelText: 'Gas Supplier',
@@ -494,6 +517,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       ),
                       const SizedBox(height: 16),
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _meterLocationController,
                         decoration: const InputDecoration(
                           labelText: 'Meter Location',
@@ -504,17 +528,20 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       CheckboxListTile(
                         title: const Text('Gas Meter Installed'),
                         value: _hasGasMeter,
-                        onChanged: (value) => setState(() => _hasGasMeter = value!),
+                        onChanged: (value) =>
+                            setState(() => _hasGasMeter = value!),
                       ),
                       CheckboxListTile(
                         title: const Text('Regulator Installed'),
                         value: _hasRegulator,
-                        onChanged: (value) => setState(() => _hasRegulator = value!),
+                        onChanged: (value) =>
+                            setState(() => _hasRegulator = value!),
                       ),
                       CheckboxListTile(
                         title: const Text('Shut-off Valve Installed'),
                         value: _hasShutoffValve,
-                        onChanged: (value) => setState(() => _hasShutoffValve = value!),
+                        onChanged: (value) =>
+                            setState(() => _hasShutoffValve = value!),
                       ),
                     ],
                   ),
@@ -529,11 +556,13 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       CheckboxListTile(
                         title: const Text('Gas Pressure Test'),
                         value: _gasPressureTestDone,
-                        onChanged: (value) => setState(() => _gasPressureTestDone = value!),
+                        onChanged: (value) =>
+                            setState(() => _gasPressureTestDone = value!),
                       ),
                       if (_gasPressureTestDone) ...[
                         const SizedBox(height: 8),
                         TextField(
+                          textCapitalization: TextCapitalization.sentences,
                           controller: _gasPressureTestController,
                           decoration: const InputDecoration(
                             labelText: 'Gas Pressure Test Results',
@@ -545,11 +574,13 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       CheckboxListTile(
                         title: const Text('Gas Leak Test'),
                         value: _gasLeakTestDone,
-                        onChanged: (value) => setState(() => _gasLeakTestDone = value!),
+                        onChanged: (value) =>
+                            setState(() => _gasLeakTestDone = value!),
                       ),
                       if (_gasLeakTestDone) ...[
                         const SizedBox(height: 8),
                         TextField(
+                          textCapitalization: TextCapitalization.sentences,
                           controller: _gasLeakTestController,
                           decoration: const InputDecoration(
                             labelText: 'Gas Leak Test Results',
@@ -561,11 +592,13 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       CheckboxListTile(
                         title: const Text('Ventilation Check'),
                         value: _ventilationTestDone,
-                        onChanged: (value) => setState(() => _ventilationTestDone = value!),
+                        onChanged: (value) =>
+                            setState(() => _ventilationTestDone = value!),
                       ),
                       if (_ventilationTestDone) ...[
                         const SizedBox(height: 8),
                         TextField(
+                          textCapitalization: TextCapitalization.sentences,
                           controller: _ventilationController,
                           decoration: const InputDecoration(
                             labelText: 'Ventilation Check Results',
@@ -577,11 +610,13 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       CheckboxListTile(
                         title: const Text('Appliance Commissioning'),
                         value: _applianceTestDone,
-                        onChanged: (value) => setState(() => _applianceTestDone = value!),
+                        onChanged: (value) =>
+                            setState(() => _applianceTestDone = value!),
                       ),
                       if (_applianceTestDone) ...[
                         const SizedBox(height: 8),
                         TextField(
+                          textCapitalization: TextCapitalization.sentences,
                           controller: _applianceCommissioningController,
                           decoration: const InputDecoration(
                             labelText: 'Appliance Commissioning Details',
@@ -601,6 +636,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                     icon: Icons.person,
                     children: [
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _userNameController,
                         decoration: const InputDecoration(
                           labelText: 'Gas Fitter Name *',
@@ -609,6 +645,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       ),
                       const SizedBox(height: 16),
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _userLicenseController,
                         decoration: const InputDecoration(
                           labelText: 'License Number *',
@@ -617,6 +654,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       ),
                       const SizedBox(height: 16),
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _userPhoneController,
                         decoration: const InputDecoration(
                           labelText: 'Phone Number',
@@ -625,6 +663,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       ),
                       const SizedBox(height: 16),
                       TextField(
+                        textCapitalization: TextCapitalization.sentences,
                         controller: _userEmailController,
                         decoration: const InputDecoration(
                           labelText: 'Email Address',
@@ -647,26 +686,33 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('Work Start Date', style: TextStyle(fontWeight: FontWeight.w600)),
+                                const Text('Work Start Date',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w600)),
                                 const SizedBox(height: 8),
                                 InkWell(
                                   onTap: () => _selectDate(context, true),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12, horizontal: 16),
                                     decoration: BoxDecoration(
                                       border: Border.all(color: Colors.grey),
                                       borderRadius: BorderRadius.circular(8),
                                     ),
                                     child: Row(
                                       children: [
-                                        const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
+                                        const Icon(Icons.calendar_today,
+                                            size: 16, color: Colors.grey),
                                         const SizedBox(width: 8),
                                         Text(
-                                          _testStartDate != null 
-                                              ? DateFormat('dd/MM/yyyy').format(_testStartDate!)
+                                          _testStartDate != null
+                                              ? DateFormat('dd/MM/yyyy')
+                                                  .format(_testStartDate!)
                                               : 'Select Date',
                                           style: TextStyle(
-                                            color: _testStartDate != null ? Colors.black : Colors.grey,
+                                            color: _testStartDate != null
+                                                ? Colors.black
+                                                : Colors.grey,
                                           ),
                                         ),
                                       ],
@@ -685,26 +731,33 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('Work End Date', style: TextStyle(fontWeight: FontWeight.w600)),
+                                const Text('Work End Date',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w600)),
                                 const SizedBox(height: 8),
                                 InkWell(
                                   onTap: () => _selectDate(context, false),
                                   child: Container(
-                                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12, horizontal: 16),
                                     decoration: BoxDecoration(
                                       border: Border.all(color: Colors.grey),
                                       borderRadius: BorderRadius.circular(8),
                                     ),
                                     child: Row(
                                       children: [
-                                        const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
+                                        const Icon(Icons.calendar_today,
+                                            size: 16, color: Colors.grey),
                                         const SizedBox(width: 8),
                                         Text(
-                                          _testEndDate != null 
-                                              ? DateFormat('dd/MM/yyyy').format(_testEndDate!)
+                                          _testEndDate != null
+                                              ? DateFormat('dd/MM/yyyy')
+                                                  .format(_testEndDate!)
                                               : 'Select Date',
                                           style: TextStyle(
-                                            color: _testEndDate != null ? Colors.black : Colors.grey,
+                                            color: _testEndDate != null
+                                                ? Colors.black
+                                                : Colors.grey,
                                           ),
                                         ),
                                       ],
@@ -725,7 +778,7 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
               ),
             ),
           ),
-          
+
           // Bottom button area within SafeArea to avoid system nav overlap
           SafeArea(
             top: false,
@@ -751,8 +804,10 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
                       backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
                       minimumSize: const Size(double.infinity, 56),
-                      textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w600),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                       elevation: 3,
                     ),
                     onPressed: _generateGasCocCertificate,
@@ -802,7 +857,8 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
     );
   }
 
-  Widget _buildChoiceChip(String label, String selectedValue, ValueChanged<String> onSelected) {
+  Widget _buildChoiceChip(
+      String label, String selectedValue, ValueChanged<String> onSelected) {
     final isSelected = selectedValue == label;
     return ChoiceChip(
       label: Text(label),
@@ -828,17 +884,16 @@ class _GasCocFormScreenState extends State<GasCocFormScreen> with DocumentNaming
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/job_${widget.job.id}.json');
       await file.writeAsString(jsonEncode(widget.job.toJson()));
-      
+
       // Save to cloud using hybrid storage system
       await FirestoreService.saveJob(widget.job);
-      
+
       // Trigger sync through scheduler for optimal cloud sync
       await SyncScheduler.syncNow(DataType.jobs);
-      
+
       setState(() {
         _hasUnsavedChanges = false;
       });
-      
     } catch (e) {
       print('Error saving job: $e');
       // Still show success for local save even if cloud fails

@@ -281,13 +281,11 @@ class FirestoreService {
     
     final snapshot = await priceBookCollection
         .orderBy('name')
-        .limit(100)
         .get();
         
     return snapshot.docs
         .map((doc) => PriceBookItem.fromJson(doc.data()))
         .where((item) => item.name.toLowerCase().contains(query.toLowerCase()))
-        .take(limit)
         .toList();
   }
 
@@ -379,6 +377,44 @@ class FirestoreService {
       }
       
       await batch.commit();
+    }
+  }
+
+  /// Batch save only edited/used price book items
+  static Future<void> batchSaveEditedOrUsedPriceBookItems(List<PriceBookItem> items) async {
+    if (currentUserId == null) throw Exception('User not authenticated');
+    if (items.isEmpty) return;
+
+    final priceBookCollection = _priceBook;
+    final db = _db;
+    if (priceBookCollection == null || db == null) throw Exception('Firebase not initialized');
+
+    // Only sync items that are edited or used
+    final itemsToSync = items.where((item) => item.isEdited == true || item.isUsed == true).toList();
+    if (itemsToSync.isEmpty) return;
+
+    // Process in batches of 500 (Firestore limit)
+    const batchSize = 500;
+    for (int i = 0; i < itemsToSync.length; i += batchSize) {
+      final batch = db.batch();
+      final endIndex = (i + batchSize < itemsToSync.length) ? i + batchSize : itemsToSync.length;
+
+      for (int j = i; j < endIndex; j++) {
+        final item = itemsToSync[j];
+        final docRef = priceBookCollection.doc(item.code);
+        batch.set(docRef, {
+          ...item.toJson(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      await batch.commit();
+    }
+
+    // Optionally reset flags after sync
+    for (final item in itemsToSync) {
+      item.isEdited = false;
+      item.isUsed = false;
     }
   }
 

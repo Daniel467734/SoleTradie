@@ -7,6 +7,7 @@ class Customer {
   final List<String> additionalEmails;
   final String phone;
   final String paymentTerms;
+  final String bodyCorporateNumber;
   final bool isRemote; // Remote customer flag - when true, all customer data uses hybrid storage
 
   Customer({
@@ -18,6 +19,7 @@ class Customer {
     this.additionalEmails = const [],
     required this.phone,
     this.paymentTerms = '7 days',
+    this.bodyCorporateNumber = '',
     this.isRemote = false,
   });
 
@@ -30,6 +32,7 @@ class Customer {
     List<String>? additionalEmails,
     String? phone,
     String? paymentTerms,
+    String? bodyCorporateNumber,
     bool? isRemote,
   }) {
     return Customer(
@@ -41,6 +44,7 @@ class Customer {
       additionalEmails: additionalEmails ?? this.additionalEmails,
       phone: phone ?? this.phone,
       paymentTerms: paymentTerms ?? this.paymentTerms,
+      bodyCorporateNumber: bodyCorporateNumber ?? this.bodyCorporateNumber,
       isRemote: isRemote ?? this.isRemote,
     );
   }
@@ -54,6 +58,7 @@ class Customer {
         additionalEmails: List<String>.from(json['additionalEmails'] ?? []),
         phone: json['phone'],
         paymentTerms: json['paymentTerms'] ?? '7 days',
+        bodyCorporateNumber: json['bodyCorporateNumber'] ?? '',
         isRemote: json['isRemote'] ?? false,
       );
 
@@ -66,6 +71,7 @@ class Customer {
         'additionalEmails': additionalEmails,
         'phone': phone,
         'paymentTerms': paymentTerms,
+        'bodyCorporateNumber': bodyCorporateNumber,
         'isRemote': isRemote,
       };
 

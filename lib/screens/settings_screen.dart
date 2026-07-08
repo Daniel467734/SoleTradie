@@ -40,6 +40,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _reviewLinkController = TextEditingController();
   String? _logoPath;
   Color _pdfBannerColor = const Color(0xFF2196F3); // Default blue for PDF banner
+  Color _pdfLineItemColor = const Color(0xFF2196F3); // Default blue for line items
+  Color _pdfTotalsColor = const Color(0xFF2196F3); // Default blue for totals box
   
   // PDF Receipt Scanner Settings
   List<String> _selectedSupplierTemplates = [];
@@ -80,6 +82,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isCloudSyncing = false;
   bool _isGstRegistered = true; // Default to GST registered
   Color _appColor = const Color(0xFF2196F3); // Default blue
+  Color _accentColor = const Color(0xFF4CAF50); // Default green accent (secondary colour used app-wide for highlights/success)
   String _selectedCountry = 'New Zealand'; // Default country for address search
 
   @override
@@ -167,11 +170,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     // Company Settings
     await prefs.setString('company_name', _companyNameController.text);
     await prefs.setString('gst_number', _gstNumberController.text);
-    await prefs.setString('company_address', _companyAddressController.text);
+
+    // If the company address changed, clear the cached geocoded
+    // coordinates so the office weather card (and anything else relying on
+    // AddressSearchService.getCompanyCoordinates()) re-geocodes against the
+    // new address instead of showing weather for the old location.
+    final previousAddress = prefs.getString('company_address') ?? '';
+    final newAddress = _companyAddressController.text;
+    if (previousAddress.trim() != newAddress.trim()) {
+      await prefs.remove('company_latitude');
+      await prefs.remove('company_longitude');
+    }
+    await prefs.setString('company_address', newAddress);
     await prefs.setString('bank_details', _bankDetailsController.text);
     await prefs.setString('main_email', _mainEmailController.text);
     await prefs.setString('secondary_email', _secondaryEmailController.text);
@@ -321,11 +335,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
       });
     }
     
+    // Load accent color (secondary colour used app-wide for highlights/success states)
+    final accentColorString = prefs.getString('accent_color');
+    if (accentColorString != null && accentColorString.length == 9) {
+      setState(() {
+        _accentColor = Color(int.parse(accentColorString.substring(1), radix: 16));
+      });
+    }
+    
     // Load PDF banner color
     final pdfColorString = prefs.getString('pdf_banner_color');
     if (pdfColorString != null && pdfColorString.length == 9) {
       setState(() {
         _pdfBannerColor = Color(int.parse(pdfColorString.substring(1), radix: 16));
+      });
+    }
+    
+    // Load PDF line item color
+    final pdfLineItemColorString = prefs.getString('pdf_line_item_color');
+    if (pdfLineItemColorString != null && pdfLineItemColorString.length == 9) {
+      setState(() {
+        _pdfLineItemColor = Color(int.parse(pdfLineItemColorString.substring(1), radix: 16));
+      });
+    }
+    
+    // Load PDF totals color
+    final pdfTotalsColorString = prefs.getString('pdf_totals_color');
+    if (pdfTotalsColorString != null && pdfTotalsColorString.length == 9) {
+      setState(() {
+        _pdfTotalsColor = Color(int.parse(pdfTotalsColorString.substring(1), radix: 16));
       });
     }
   }
@@ -335,11 +373,138 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final colorString = '#${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
     await prefs.setString('app_color', colorString);
   }
+
+  Future<void> _saveAccentColor(Color color) async {
+    final prefs = await SharedPreferences.getInstance();
+    final colorString = '#${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
+    await prefs.setString('accent_color', colorString);
+  }
   
   Future<void> _savePdfColor(Color color) async {
     final prefs = await SharedPreferences.getInstance();
     final colorString = '#${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
     await prefs.setString('pdf_banner_color', colorString);
+  }
+  
+  Future<void> _savePdfLineItemColor(Color color) async {
+    final prefs = await SharedPreferences.getInstance();
+    final colorString = '#${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
+    await prefs.setString('pdf_line_item_color', colorString);
+  }
+  
+  Future<void> _savePdfTotalsColor(Color color) async {
+    final prefs = await SharedPreferences.getInstance();
+    final colorString = '#${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
+    await prefs.setString('pdf_totals_color', colorString);
+  }
+
+  /// Show an enhanced color picker with Wheel, Spectrum, and Swatches tabs
+  Future<Color?> _showColorPickerDialog(Color initialColor, String title) async {
+    Color pickedColor = initialColor;
+
+    return showDialog<Color>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(title),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: DefaultTabController(
+                  length: 3,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const TabBar(
+                        labelColor: Colors.blue,
+                        unselectedLabelColor: Colors.grey,
+                        tabs: [
+                          Tab(text: 'Wheel'),
+                          Tab(text: 'Spectrum'),
+                          Tab(text: 'Swatches'),
+                        ],
+                      ),
+                      SizedBox(
+                        height: 320,
+                        child: TabBarView(
+                          children: [
+                            // Color wheel picker
+                            SingleChildScrollView(
+                              child: HueRingPicker(
+                                pickerColor: pickedColor,
+                                onColorChanged: (color) {
+                                  setDialogState(() => pickedColor = color);
+                                },
+                                enableAlpha: false,
+                                displayThumbColor: true,
+                              ),
+                            ),
+                            // Full spectrum HSV picker
+                            SingleChildScrollView(
+                              child: ColorPicker(
+                                pickerColor: pickedColor,
+                                onColorChanged: (color) {
+                                  setDialogState(() => pickedColor = color);
+                                },
+                                enableAlpha: false,
+                                displayThumbColor: true,
+                                paletteType: PaletteType.hsv,
+                                pickerAreaHeightPercent: 0.7,
+                              ),
+                            ),
+                            // Quick swatch blocks
+                            SingleChildScrollView(
+                              child: BlockPicker(
+                                pickerColor: pickedColor,
+                                onColorChanged: (color) {
+                                  setDialogState(() => pickedColor = color);
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        width: double.infinity,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: pickedColor,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '#${pickedColor.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}',
+                            style: TextStyle(
+                              color: ThemeData.estimateBrightnessForColor(pickedColor) == Brightness.dark
+                                  ? Colors.white
+                                  : Colors.black,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context, pickedColor),
+                  child: const Text('Select'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _showSmtpHelpDialog() {
@@ -491,6 +656,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final invoiceController = TextEditingController(
       text: prefs.getString('invoice_message') ?? '''Hi {customerName}
 
+Find attached your invoice.
+
+{reviewText}Many Thanks
+{fullName}
+
+{companyName}
+{mainEmail}''',
+    );
+
+    final invoiceCertController = TextEditingController(
+      text: prefs.getString('invoice_certificate_message') ?? '''Hi {customerName}
+
 Find attached your invoice and electrical certificate.
 
 {reviewText}Many Thanks
@@ -540,10 +717,24 @@ Many Thanks
 {mainEmail}''',
     );
 
+    final followUpController = TextEditingController(
+      text: prefs.getString('followup_message') ?? '''Hi {customerName}
+
+Just a friendly follow-up regarding invoice {invoiceNumber} for {invoiceAmount}, sent on {invoiceDate}.
+
+If you've already made payment, please disregard this message. Otherwise, please let us know if you have any questions.
+
+Many Thanks
+{fullName}
+
+{companyName}
+{mainEmail}''',
+    );
+
     showDialog(
       context: context,
       builder: (context) => DefaultTabController(
-        length: 4,
+        length: 6,
         child: AlertDialog(
           title: const Text('Email Templates'),
           content: SizedBox(
@@ -552,29 +743,46 @@ Many Thanks
             child: Column(
               children: [
                 const Text(
-                  'Use placeholders: {customerName}, {fullName}, {companyName}, {mainEmail}, {reviewText}',
+                  'Use placeholders: {customerName}, {fullName}, {companyName}, {mainEmail}, {reviewText}, {invoiceNumber}, {invoiceAmount}, {invoiceDate}',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
                 const SizedBox(height: 16),
                 const TabBar(
+                  isScrollable: true,
                   tabs: [
                     Tab(text: 'Invoice'),
+                    Tab(text: 'Invoice + Cert'),
                     Tab(text: 'Estimate'),
                     Tab(text: 'Quote'),
                     Tab(text: 'Message'),
+                    Tab(text: 'Follow Up'),
                   ],
                 ),
                 Expanded(
                   child: TabBarView(
                     children: [
-                      // Invoice Template
+                      // Invoice Template (no certificate)
                       Padding(
                         padding: const EdgeInsets.all(8.0),
-                        child: TextField(
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
                           controller: invoiceController,
                           decoration: const InputDecoration(
                             labelText: 'Invoice Email Template',
                             border: OutlineInputBorder(),
+                            helperText: 'Used when sending an invoice without a certificate',
+                          ),
+                          maxLines: 15,
+                        ),
+                      ),
+                      // Invoice + Certificate Template
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
+                          controller: invoiceCertController,
+                          decoration: const InputDecoration(
+                            labelText: 'Invoice + Certificate Email Template',
+                            border: OutlineInputBorder(),
+                            helperText: 'Used when sending an invoice with an electrical certificate attached',
                           ),
                           maxLines: 15,
                         ),
@@ -582,7 +790,7 @@ Many Thanks
                       // Estimate Template
                       Padding(
                         padding: const EdgeInsets.all(8.0),
-                        child: TextField(
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
                           controller: estimateController,
                           decoration: const InputDecoration(
                             labelText: 'Estimate Email Template',
@@ -594,7 +802,7 @@ Many Thanks
                       // Quote Template
                       Padding(
                         padding: const EdgeInsets.all(8.0),
-                        child: TextField(
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
                           controller: quoteController,
                           decoration: const InputDecoration(
                             labelText: 'Quote Email Template',
@@ -606,11 +814,24 @@ Many Thanks
                       // Message Template
                       Padding(
                         padding: const EdgeInsets.all(8.0),
-                        child: TextField(
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
                           controller: messageController,
                           decoration: const InputDecoration(
                             labelText: 'General Message Template',
                             border: OutlineInputBorder(),
+                          ),
+                          maxLines: 15,
+                        ),
+                      ),
+                      // Follow Up Template
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: TextField(textCapitalization: TextCapitalization.sentences, 
+                          controller: followUpController,
+                          decoration: const InputDecoration(
+                            labelText: 'Invoice Follow-Up Email Template',
+                            border: OutlineInputBorder(),
+                            helperText: 'Used when sending a payment reminder from the Invoices screen',
                           ),
                           maxLines: 15,
                         ),
@@ -630,9 +851,11 @@ Many Thanks
               onPressed: () async {
                 // Save templates
                 await prefs.setString('invoice_message', invoiceController.text);
+                await prefs.setString('invoice_certificate_message', invoiceCertController.text);
                 await prefs.setString('estimate_message', estimateController.text);
                 await prefs.setString('quote_message', quoteController.text);
                 await prefs.setString('message_template', messageController.text);
+                await prefs.setString('followup_message', followUpController.text);
                 
                 Navigator.pop(context);
                 
@@ -1067,7 +1290,7 @@ Many Thanks
         foregroundColor: Colors.white,
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 48),
         children: [
           // Company Settings Section
           _buildSectionHeader('Company Settings', Icons.business),
@@ -1113,6 +1336,8 @@ Many Thanks
               ),
             ),
           ),
+
+          const SizedBox(height: 40),
         ],
       ),
     );
@@ -1146,7 +1371,7 @@ Many Thanks
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _companyNameController,
             decoration: const InputDecoration(
               labelText: 'Company Name',
@@ -1155,7 +1380,7 @@ Many Thanks
             ),
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _gstNumberController,
             decoration: InputDecoration(
               labelText: 'GST Number',
@@ -1182,7 +1407,7 @@ Many Thanks
             contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _companyAddressController,
             decoration: const InputDecoration(
               labelText: 'Company Address',
@@ -1192,7 +1417,7 @@ Many Thanks
             maxLines: 3,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _bankDetailsController,
             decoration: const InputDecoration(
               labelText: 'Bank Details',
@@ -1202,7 +1427,7 @@ Many Thanks
             maxLines: 3,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _mainEmailController,
             decoration: const InputDecoration(
               labelText: 'Main Email Address',
@@ -1212,7 +1437,7 @@ Many Thanks
             keyboardType: TextInputType.emailAddress,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _secondaryEmailController,
             decoration: const InputDecoration(
               labelText: 'Secondary Email Address',
@@ -1243,7 +1468,7 @@ Many Thanks
             ],
           ),
           const SizedBox(height: 8),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _smtpEmailController,
             decoration: const InputDecoration(
               labelText: 'SMTP Email Address',
@@ -1254,7 +1479,7 @@ Many Thanks
             keyboardType: TextInputType.emailAddress,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _smtpPasswordController,
             decoration: const InputDecoration(
               labelText: 'SMTP Password/App Password',
@@ -1268,7 +1493,7 @@ Many Thanks
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _smtpServerController,
                   decoration: const InputDecoration(
                     labelText: 'SMTP Server',
@@ -1292,7 +1517,7 @@ Many Thanks
               const SizedBox(width: 16),
               SizedBox(
                 width: 100,
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _smtpPortController,
                   decoration: const InputDecoration(
                     labelText: 'Port',
@@ -1306,7 +1531,7 @@ Many Thanks
           ),
           const SizedBox(height: 16),
           
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _reviewLinkController,
             decoration: const InputDecoration(
               labelText: 'Review Link (Optional)',
@@ -1342,18 +1567,7 @@ Many Thanks
           const SizedBox(height: 8),
           GestureDetector(
             onTap: () async {
-              final color = await showDialog<Color>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Pick PDF Banner Color'),
-                  content: SingleChildScrollView(
-                    child: BlockPicker(
-                      pickerColor: _pdfBannerColor,
-                      onColorChanged: (color) => Navigator.pop(context, color),
-                    ),
-                  ),
-                ),
-              );
+              final color = await _showColorPickerDialog(_pdfBannerColor, 'Pick PDF Banner Color');
               if (color != null) {
                 setState(() => _pdfBannerColor = color);
                 await _savePdfColor(color);
@@ -1372,6 +1586,82 @@ Many Thanks
                   'Tap to change PDF banner color',
                   style: TextStyle(
                     color: ThemeData.estimateBrightnessForColor(_pdfBannerColor) == Brightness.dark
+                        ? Colors.white
+                        : Colors.black,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          
+          // PDF Line Item Color Section
+          const Text(
+            'PDF Line Item Color',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: () async {
+              final color = await _showColorPickerDialog(_pdfLineItemColor, 'Pick PDF Line Item Color');
+              if (color != null) {
+                setState(() => _pdfLineItemColor = color);
+                await _savePdfLineItemColor(color);
+              }
+            },
+            child: Container(
+              width: double.infinity,
+              height: 50,
+              decoration: BoxDecoration(
+                color: _pdfLineItemColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Center(
+                child: Text(
+                  'Tap to change line item table color',
+                  style: TextStyle(
+                    color: ThemeData.estimateBrightnessForColor(_pdfLineItemColor) == Brightness.dark
+                        ? Colors.white
+                        : Colors.black,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          
+          // PDF Totals Color Section
+          const Text(
+            'PDF Totals Box Color',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: () async {
+              final color = await _showColorPickerDialog(_pdfTotalsColor, 'Pick PDF Totals Box Color');
+              if (color != null) {
+                setState(() => _pdfTotalsColor = color);
+                await _savePdfTotalsColor(color);
+              }
+            },
+            child: Container(
+              width: double.infinity,
+              height: 50,
+              decoration: BoxDecoration(
+                color: _pdfTotalsColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Center(
+                child: Text(
+                  'Tap to change totals box color',
+                  style: TextStyle(
+                    color: ThemeData.estimateBrightnessForColor(_pdfTotalsColor) == Brightness.dark
                         ? Colors.white
                         : Colors.black,
                     fontWeight: FontWeight.bold,
@@ -1513,7 +1803,7 @@ Many Thanks
                   ),
                   if (_myobEnabled) ...[
                     const SizedBox(height: 12),
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _myobApiKeyController,
                       decoration: const InputDecoration(
                         labelText: 'MYOB API Key',
@@ -1524,7 +1814,7 @@ Many Thanks
                       obscureText: true,
                     ),
                     const SizedBox(height: 12),
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _myobCompanyFileController,
                       decoration: const InputDecoration(
                         labelText: 'Company File GUID',
@@ -1537,7 +1827,7 @@ Many Thanks
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _myobUserController,
                             decoration: const InputDecoration(
                               labelText: 'Username',
@@ -1549,7 +1839,7 @@ Many Thanks
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: TextField(
+                          child: TextField(textCapitalization: TextCapitalization.sentences, 
                             controller: _myobPasswordController,
                             decoration: const InputDecoration(
                               labelText: 'Password',
@@ -1609,7 +1899,7 @@ Many Thanks
                   ),
                   if (_xeroEnabled) ...[
                     const SizedBox(height: 12),
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _xeroClientIdController,
                       decoration: const InputDecoration(
                         labelText: 'Xero Client ID',
@@ -1619,7 +1909,7 @@ Many Thanks
                       ),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _xeroClientSecretController,
                       decoration: const InputDecoration(
                         labelText: 'Xero Client Secret',
@@ -1741,7 +2031,7 @@ Many Thanks
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _firstNameController,
                   decoration: const InputDecoration(
                     labelText: 'First Name',
@@ -1752,7 +2042,7 @@ Many Thanks
               ),
               const SizedBox(width: 16),
               Expanded(
-                child: TextField(
+                child: TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: _lastNameController,
                   decoration: const InputDecoration(
                     labelText: 'Last Name',
@@ -1764,7 +2054,7 @@ Many Thanks
             ],
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _gasFittingLicenseController,
             decoration: const InputDecoration(
               labelText: 'Gas Fitting License',
@@ -1773,7 +2063,7 @@ Many Thanks
             ),
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _electricalLicenseController,
             decoration: const InputDecoration(
               labelText: 'Electrical License',
@@ -1782,7 +2072,7 @@ Many Thanks
             ),
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _personalEmailController,
             decoration: const InputDecoration(
               labelText: 'Personal Email Address',
@@ -1792,7 +2082,7 @@ Many Thanks
             keyboardType: TextInputType.emailAddress,
           ),
           const SizedBox(height: 16),
-          TextField(
+          TextField(textCapitalization: TextCapitalization.sentences, 
             controller: _phoneController,
             decoration: const InputDecoration(
               labelText: 'Phone Number',
@@ -1899,24 +2189,18 @@ Many Thanks
           children: [
           // App Color Picker
           const Text(
-            'App Color Theme',
+            'App Color Theme (Primary)',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Used for the app bar, main buttons and primary highlights.',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
           ),
           const SizedBox(height: 12),
           GestureDetector(
             onTap: () async {
-              final color = await showDialog<Color>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Pick App Color'),
-                  content: SingleChildScrollView(
-                    child: BlockPicker(
-                      pickerColor: _appColor,
-                      onColorChanged: (color) => Navigator.pop(context, color),
-                    ),
-                  ),
-                ),
-              );
+              final color = await _showColorPickerDialog(_appColor, 'Pick App Color');
               if (color != null) {
                 setState(() => _appColor = color);
                 await _saveColor(color);
@@ -1935,6 +2219,49 @@ Many Thanks
                   'Tap to change color',
                   style: TextStyle(
                     color: ThemeData.estimateBrightnessForColor(_appColor) == Brightness.dark
+                        ? Colors.white
+                        : Colors.black,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Accent Color Picker (2nd colour)
+          const Text(
+            'Accent Color (Secondary)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Used app-wide for highlights, totals and success states (e.g. Dashboard invoice amount).',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () async {
+              final color = await _showColorPickerDialog(_accentColor, 'Pick Accent Color');
+              if (color != null) {
+                setState(() => _accentColor = color);
+                await _saveAccentColor(color);
+              }
+            },
+            child: Container(
+              width: double.infinity,
+              height: 60,
+              decoration: BoxDecoration(
+                color: _accentColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Center(
+                child: Text(
+                  'Tap to change color',
+                  style: TextStyle(
+                    color: ThemeData.estimateBrightnessForColor(_accentColor) == Brightness.dark
                         ? Colors.white
                         : Colors.black,
                     fontWeight: FontWeight.bold,
@@ -2626,7 +2953,7 @@ Many Thanks
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Supplier Name'),
-        content: TextField(
+        content: TextField(textCapitalization: TextCapitalization.sentences, 
           controller: controller,
           decoration: const InputDecoration(
             labelText: 'Enter supplier name',
@@ -3301,7 +3628,7 @@ Thank you!
       print('Geocoding failed for $lat, $lng: $e');
     }
     return null;
-  }
+  } 
 
   /// Clear all GPS history data
   Future<void> _clearGpsHistory() async {
@@ -3364,19 +3691,26 @@ Thank you!
           content += '   Time: ${entry['timestamp']}\n';
           
           // Calculate duration, including current time if still on-site
-          double displayDuration = entry['duration']?.toDouble() ?? 0.0;
+          double displayDuration = 0.0;
           String durationNote = '';
-          
-          if (entry['departureTime'] == null && entry['arrivalTime'] != null) {
-            // Still on-site - calculate time to current moment
+
+          final durationStartRaw = entry['duration_start'] ?? entry['timestamp'];
+          final durationEndRaw = entry['duration_end'] ?? entry['departureTime'];
+
+          if (durationStartRaw != null) {
             try {
-              final arrivalTime = DateTime.parse(entry['arrivalTime']);
-              final currentTime = DateTime.now();
-              final currentDuration = currentTime.difference(arrivalTime).inMinutes / 60.0;
-              displayDuration = currentDuration;
-              durationNote = ' (still on-site)';
+              final startTime = DateTime.parse(durationStartRaw);
+              if (durationEndRaw != null) {
+                final endTime = DateTime.parse(durationEndRaw);
+                displayDuration = endTime.difference(startTime).inMinutes / 60.0;
+              } else {
+                // Still on-site - calculate time to current moment
+                final currentTime = DateTime.now();
+                displayDuration = currentTime.difference(startTime).inMinutes / 60.0;
+                durationNote = ' (still on-site)';
+              }
             } catch (e) {
-              // Keep original duration if parsing fails
+              // Keep duration at 0.0 if parsing fails
             }
           }
           

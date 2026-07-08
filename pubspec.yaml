@@ -1,5 +1,5 @@
 name: sole_trader
-description: A custom electrician estimate & invoice app for sole traders using Flutter and AWS Amplify.
+description: A custom electrician estimate & invoice app for Mr Watts Electrical built with Flutter and AWS Amplify.
 publish_to: "none"
 
 version: 1.0.0+1
@@ -100,6 +100,7 @@ dependencies:
   # googleapis_auth: ^1.4.1  # Only needed for cloud voice services
   # googleapis: ^13.2.0  # Only needed for cloud voice services
   # azure_cognitiveservices_speech: ^1.38.0  # Alternative cloud solution
+  uuid: ^4.1.0
 
 dev_dependencies:
   flutter_test:
@@ -108,6 +109,7 @@ dev_dependencies:
   mockito: ^5.4.0
   build_runner: ^2.4.0
   isar_generator: ^3.1.0+1
+  flutter_launcher_icons: ^0.12.0
 
 flutter:
   uses-material-design: true
@@ -117,3 +119,12 @@ flutter:
     - assets/certificates/ESC EWRB NZ.pdf
     - assets/certificates/ROI EWRB NZ.pdf
     - assets/receipt_templates/
+
+flutter_icons:
+  image_path: "assets/FullColor_IconOnly_1024x1024_72dpi.jpg"
+  android: true
+  ios: true
+  macos:
+    generate: true
+  web:
+    generate: true

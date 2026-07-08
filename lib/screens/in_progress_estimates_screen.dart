@@ -22,6 +22,38 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
   List<InProgressBuild> allBuilds = [];
   bool _isLoading = true;
 
+  /// Reads the build type ('estimate' | 'quote' | 'invoice') saved alongside
+  /// an in-progress build's other data, defaulting to 'estimate' for older
+  /// builds saved before this field existed.
+  String _buildTypeOf(InProgressBuild build) {
+    final saved = build.currentVersion.additionalData?['buildType'];
+    return (saved is String && saved.isNotEmpty) ? saved : 'estimate';
+  }
+
+  String _buildTypeLabel(String type) {
+    switch (type) {
+      case 'invoice':
+        return 'Invoice';
+      case 'quote':
+        return 'Quote';
+      case 'estimate':
+      default:
+        return 'Estimate';
+    }
+  }
+
+  IconData _buildTypeIcon(String type) {
+    switch (type) {
+      case 'invoice':
+        return Icons.receipt_long;
+      case 'quote':
+        return Icons.request_quote;
+      case 'estimate':
+      default:
+        return Icons.description;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -74,7 +106,7 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
              job.customerName?.toLowerCase().contains(searchTerm) == true ||
              job.address?.toLowerCase().contains(searchTerm) == true ||
              build.name.toLowerCase().contains(searchTerm);
-    }).toList();
+    }).toList()..sort((a, b) => b.lastModified.compareTo(a.lastModified));
 
     return Scaffold(
       appBar: AppBar(
@@ -90,9 +122,9 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.all(8),
-            child: TextField(
+            child: TextField(textCapitalization: TextCapitalization.sentences, 
               decoration: const InputDecoration(
-                labelText: 'Search by job name, customer, or address',
+                labelText: 'Search by build, job, customer, or address',
                 prefixIcon: Icon(Icons.search),
                 border: OutlineInputBorder(),
               ),
@@ -122,11 +154,12 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
                           return Card(
                             margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             child: ListTile(
-                              leading: const Icon(Icons.build_circle, color: Colors.orange),
-                              title: Text('In-Progress Build ${index + 1}'),
+                              leading: Icon(_buildTypeIcon(_buildTypeOf(build)), color: Colors.orange),
+                              title: Text(build.name),
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
+                                  Text(_buildTypeLabel(_buildTypeOf(build)), style: const TextStyle(fontWeight: FontWeight.w600)),
                                   Text('Job: ${job.title}'),
                                   Text('Customer: ${job.customerName ?? 'Unknown'}'),
                                   Text('Site: ${job.address ?? 'No address'}'),
@@ -142,7 +175,13 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
                                       MaterialPageRoute(
                                         builder: (_) => estimate_builder.EstimateBuilderScreen(
                                           job: job,
+                                          inProgressBuildId: build.id,
                                           initialItems: build.currentVersion.items,
+                                          initialSubsections: build.currentVersion.subsections,
+                                          initialDepositAmount: build.currentVersion.additionalData?['depositAmount'] is num ? (build.currentVersion.additionalData!['depositAmount'] as num).toDouble() : null,
+                                          initialDepositPercentage: build.currentVersion.additionalData?['depositPercentage'] is num ? (build.currentVersion.additionalData!['depositPercentage'] as num).toDouble() : null,
+                                          initialIsDepositPercentage: build.currentVersion.additionalData?['isDepositPercentage'] == true,
+                                          initialBuildType: _buildTypeOf(build),
                                         ),
                                       ),
                                     );
@@ -210,7 +249,13 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
                                   MaterialPageRoute(
                                     builder: (_) => estimate_builder.EstimateBuilderScreen(
                                       job: job,
+                                      inProgressBuildId: build.id,
                                       initialItems: build.currentVersion.items,
+                                      initialSubsections: build.currentVersion.subsections,
+                                      initialDepositAmount: build.currentVersion.additionalData?['depositAmount'] is num ? (build.currentVersion.additionalData!['depositAmount'] as num).toDouble() : null,
+                                      initialDepositPercentage: build.currentVersion.additionalData?['depositPercentage'] is num ? (build.currentVersion.additionalData!['depositPercentage'] as num).toDouble() : null,
+                                      initialIsDepositPercentage: build.currentVersion.additionalData?['isDepositPercentage'] == true,
+                                      initialBuildType: _buildTypeOf(build),
                                     ),
                                   ),
                                 );

@@ -6,7 +6,7 @@ import 'firestore_service.dart';
 import '../models/customer.dart';
 import '../models/job.dart';
 import '../models/price_book_item.dart';
-import '../screens/pricebook_screen.dart' as pb;
+import '../screens/pricebook_extensive_screen.dart' as pb;
 
 /// Enhanced Firebase integration service that provides seamless sync between local and cloud storage
 class FirebaseIntegrationService {
@@ -342,7 +342,15 @@ class FirebaseIntegrationService {
       if (await file.exists()) {
         final jsonString = await file.readAsString();
         if (jsonString.trim().isNotEmpty) {
-          final List<dynamic> jsonList = jsonDecode(jsonString);
+          final decoded = jsonDecode(jsonString);
+          final List<dynamic> jsonList;
+          if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
+            jsonList = decoded['items'] as List<dynamic>;
+          } else if (decoded is List<dynamic>) {
+            jsonList = decoded;
+          } else {
+            throw Exception('Unexpected pricebook JSON structure');
+          }
           return jsonList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
         }
       }
@@ -357,7 +365,13 @@ class FirebaseIntegrationService {
       final directory = await getApplicationDocumentsDirectory();
       final file = File('${directory.path}/price_book.json');
       final jsonList = items.map((item) => item.toJson()).toList();
-      await file.writeAsString(jsonEncode(jsonList));
+      final data = {
+        'items': jsonList,
+        'lastSaved': DateTime.now().toIso8601String(),
+        'version': 1,
+        'totalItems': jsonList.length,
+      };
+      await file.writeAsString(jsonEncode(data));
     } catch (e) {
       print('❌ Error saving price book to local: $e');
     }

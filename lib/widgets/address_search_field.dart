@@ -80,13 +80,16 @@ class _AddressSearchFieldState extends State<AddressSearchField> {
           _isSearching = false;
         });
         
-        if (results.isNotEmpty) {
-          _showOverlay();
-        } else {
+        if (results.isEmpty) {
+          // Show a message that no results were found
+          print('ℹ️ No address results found for query: $query');
           _removeOverlay();
+        } else {
+          _showOverlay();
         }
       }
     } catch (e) {
+      print('❌ Address search error: $e');
       if (mounted) {
         setState(() {
           _isSearching = false;
@@ -98,14 +101,18 @@ class _AddressSearchFieldState extends State<AddressSearchField> {
 
   void _showOverlay() {
     _removeOverlay();
-    
+
+    final renderBox = context.findRenderObject() as RenderBox?;
+    final fieldWidth = renderBox?.size.width ?? MediaQuery.of(context).size.width - 32;
+    final fieldHeight = renderBox?.size.height ?? 56;
+
     _overlayEntry = OverlayEntry(
       builder: (context) => Positioned(
-        width: MediaQuery.of(context).size.width - 32,
+        width: fieldWidth,
         child: CompositedTransformFollower(
           link: _layerLink,
           showWhenUnlinked: false,
-          offset: const Offset(0, 60),
+          offset: Offset(0, fieldHeight + 4),
           child: Material(
             elevation: 8,
             borderRadius: BorderRadius.circular(8),
@@ -135,9 +142,9 @@ class _AddressSearchFieldState extends State<AddressSearchField> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (suggestion.city != null || suggestion.region != null)
+                        if (suggestion.suburb != null || suggestion.city != null || suggestion.postcode != null)
                           Text(
-                            [suggestion.city, suggestion.region, suggestion.country]
+                            [suggestion.suburb, suggestion.city, suggestion.postcode]
                                 .where((e) => e != null && e.isNotEmpty)
                                 .join(', '),
                             style: TextStyle(fontSize: 12, color: Colors.grey[600]),

@@ -26,10 +26,12 @@ class DocumentNamingDemoScreen extends StatefulWidget {
   const DocumentNamingDemoScreen({super.key});
 
   @override
-  State<DocumentNamingDemoScreen> createState() => _DocumentNamingDemoScreenState();
+  State<DocumentNamingDemoScreen> createState() =>
+      _DocumentNamingDemoScreenState();
 }
 
-class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> with DocumentNamingMixin {
+class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen>
+    with DocumentNamingMixin {
   final List<Job> _demoJobs = [
     Job(
       id: '3664566345',
@@ -41,7 +43,7 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
     Job(
       id: '44555343',
       title: 'Bathroom Renovation',
-      customerName: 'Sarah Johnson', 
+      customerName: 'Sarah Johnson',
       address: '19A Mamaku Street',
       attachments: ['COC 19A Mamaku Street 44555343.pdf'], // Existing COC
     ),
@@ -78,7 +80,7 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
             ),
             const SizedBox(height: 8),
             const Text(
-              'Format: [Type] [Job Site Address] [Job Number] [(count)]',
+              'Format: [Type] [Job Site Address] [Job Number] [(count)] or [YYYY-MM-DD] [Estimate|Quote] [sequence]',
               style: TextStyle(fontSize: 16, fontStyle: FontStyle.italic),
             ),
             const SizedBox(height: 16),
@@ -114,7 +116,7 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
       child: const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('• Estimate 22B Campbell Ave 3664566345.pdf'),
+          Text('• 2026-07-01 Estimate 1.pdf'),
           Text('• Invoice 19A Mamaku Street 44555343 (2).pdf'),
           Text('• ESC 19A Mamaku Street 4455343.pdf'),
           Text('• COC 5 Queen Street 12345678.pdf'),
@@ -139,7 +141,8 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
               children: [
                 Text(
                   'Job: ${job.title}',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 Text('Customer: ${job.customerName}'),
                 Text('Address: ${job.address}'),
@@ -152,9 +155,9 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
                   ),
                   const SizedBox(height: 4),
                   ...job.attachments!.map((attachment) => Text(
-                    '• $attachment',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                  )),
+                        '• $attachment',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                      )),
                   const SizedBox(height: 8),
                 ],
                 const Text(
@@ -183,7 +186,8 @@ class _DocumentNamingDemoScreenState extends State<DocumentNamingDemoScreen> wit
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildGeneratedName('Invoice', generateInvoiceName(job), Colors.red),
-          _buildGeneratedName('Estimate', generateEstimateName(job), Colors.blue),
+          _buildGeneratedName(
+              'Estimate', generateEstimateName(job), Colors.blue),
           _buildGeneratedName('Quote', generateQuoteName(job), Colors.purple),
           _buildGeneratedName('ESC', generateEscName(job), Colors.orange),
           _buildGeneratedName('COC', generateCocName(job), Colors.teal),
@@ -239,7 +243,7 @@ class PdfGenerationExample {
     // Save the file
     // (In real app, you'd use path_provider to get the directory)
     final filePath = '/app/documents/$fileName';
-    
+
     // Add to job attachments
     job.attachments ??= [];
     if (!job.attachments!.contains(filePath)) {

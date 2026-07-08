@@ -1506,8 +1506,7 @@ Find attached your invoice and electrical certificate.
 {reviewText}Many Thanks
 {fullName}
 
-{companyName}
-{mainEmail}''';
+{companyName};
 
   final estimateTemplate = prefs.getString('estimate_message') ?? '''Hi {customerName}
 
@@ -1518,8 +1517,7 @@ Find attached the estimate for the discussed work.
 Many Thanks
 {fullName}
 
-{companyName}
-{mainEmail}''';
+{companyName};
 
   final quoteTemplate = prefs.getString('quote_message') ?? '''Hi {customerName}
 
@@ -1530,8 +1528,7 @@ Find attached the quote for the discussed work.
 Many Thanks
 {fullName}
 
-{companyName}
-{mainEmail}''';
+{companyName};
 
   final messageTemplate = prefs.getString('message_template') ?? '''Hi {customerName}
 
@@ -1540,8 +1537,7 @@ Many Thanks
 Many Thanks
 {fullName}
 
-{companyName}
-{mainEmail}''';
+{companyName};
   
   final fullName = '$finalFirstName $finalLastName'.trim();
 

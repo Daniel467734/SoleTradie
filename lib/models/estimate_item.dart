@@ -20,6 +20,7 @@ class EstimateItem {
   final String description;
   final double unitPrice;
   final double quantity;
+  final double? originalEstimateQuantity;
   final double? purchasePrice;
   final String section;
   final double? discountAmount;   // <-- Add this
@@ -30,6 +31,7 @@ class EstimateItem {
     required this.description,
     required this.unitPrice,
     required this.quantity,
+    this.originalEstimateQuantity,
     this.purchasePrice,
     required this.section,
     this.discountAmount,   // <-- Add this
@@ -43,6 +45,7 @@ class EstimateItem {
     String? description,
     double? unitPrice,
     double? quantity,
+    double? originalEstimateQuantity,
     double? purchasePrice,
     String? section,
     double? discountAmount,   // <-- Add this
@@ -53,6 +56,8 @@ class EstimateItem {
       description: description ?? this.description,
       unitPrice: unitPrice ?? this.unitPrice,
       quantity: quantity ?? this.quantity,
+      originalEstimateQuantity:
+          originalEstimateQuantity ?? this.originalEstimateQuantity,
       purchasePrice: purchasePrice ?? this.purchasePrice,
       section: section ?? this.section,
       discountAmount: discountAmount ?? this.discountAmount,     // <-- Add this
@@ -65,6 +70,7 @@ class EstimateItem {
     'description': description,
     'unitPrice': unitPrice,
     'quantity': quantity,
+    'originalEstimateQuantity': originalEstimateQuantity,
     'purchasePrice': purchasePrice,
     'section': section,
     'discountAmount': discountAmount,     // <-- Add this
@@ -76,6 +82,9 @@ class EstimateItem {
     description: json['description'],
     unitPrice: (json['unitPrice'] as num).toDouble(),
     quantity: (json['quantity'] as num).toDouble(),
+    originalEstimateQuantity: json['originalEstimateQuantity'] != null
+        ? (json['originalEstimateQuantity'] as num).toDouble()
+        : null,
     purchasePrice: json['purchasePrice'] != null ? (json['purchasePrice'] as num).toDouble() : null,
     section: json['section'],
     discountAmount: json['discountAmount'] != null ? (json['discountAmount'] as num).toDouble() : null,     // <-- Add this

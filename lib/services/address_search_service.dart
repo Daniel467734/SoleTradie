@@ -38,35 +38,47 @@ class AddressSearchResult {
   factory AddressSearchResult._fromNewZealandJson(Map<String, dynamic> json) {
     final geometry = json['geometry'] as Map<String, dynamic>?;
     final coordinates = geometry?['coordinates'] as List?;
-    
-    // Try to get the full address with house number
     final properties = json['properties'] as Map<String, dynamic>? ?? {};
-    String address = properties['full_address'] ?? properties['address'] ?? '';
-    
-    // If the address doesn't include the house number, try to construct it
-    if (address.isEmpty || !_containsNumber(address)) {
-      final houseNumber = properties['house_number']?.toString() ?? 
-                         properties['number']?.toString() ?? '';
-      final streetName = properties['street_name'] ?? properties['road'] ?? '';
-      
-      if (houseNumber.isNotEmpty && streetName.isNotEmpty) {
-        address = '$houseNumber $streetName';
-        // Add suburb/locality if available
-        final suburb = properties['suburb_locality'] ?? properties['suburb'] ?? '';
-        if (suburb.isNotEmpty) {
-          address += ', $suburb';
-        }
-      } else if (address.isEmpty) {
-        address = streetName.isNotEmpty ? streetName : (properties['display_name'] ?? '');
+
+    final houseNumber = properties['house_number']?.toString() ?? properties['number']?.toString() ?? '';
+    final streetName = properties['street_name'] ?? properties['road'] ?? properties['thoroughfare'] ?? '';
+    final city = properties['city'] ?? properties['town'] ?? '';
+    final suburb = properties['suburb_locality'] ?? properties['suburb'] ?? '';
+
+    String address = '';
+    if (houseNumber.isNotEmpty && streetName.isNotEmpty) {
+      address = '$houseNumber $streetName';
+      if (city.isNotEmpty) {
+        address += ', $city';
+      } else if (suburb.isNotEmpty) {
+        address += ', $suburb';
       }
     }
-    
+
+    if (address.isEmpty) {
+      final rawAddress = properties['full_address'] ?? properties['address'] ?? properties['display_name'] ?? '';
+      address = _shortAddress(rawAddress);
+    }
+
+    if (address.isEmpty) {
+      address = _shortAddress(properties['display_name'] ?? '');
+    }
+
+    if (address.isEmpty && houseNumber.isNotEmpty && streetName.isNotEmpty) {
+      address = '$houseNumber $streetName';
+      if (city.isNotEmpty) {
+        address += ', $city';
+      } else if (suburb.isNotEmpty) {
+        address += ', $suburb';
+      }
+    }
+
     return AddressSearchResult(
       address: address,
       latitude: coordinates != null && coordinates.length >= 2 ? coordinates[1]?.toDouble() : null,
       longitude: coordinates != null && coordinates.length >= 2 ? coordinates[0]?.toDouble() : null,
-      suburb: properties['suburb_locality'] ?? properties['suburb'],
-      city: properties['city'] ?? properties['town'],
+      suburb: suburb,
+      city: city,
       region: properties['region'] ?? properties['state'],
       postcode: properties['postcode'],
       country: 'New Zealand',
@@ -74,39 +86,64 @@ class AddressSearchResult {
   }
 
   factory AddressSearchResult._fromGenericJson(Map<String, dynamic> json) {
-    // Try to extract house number from display name for OSM results
     String displayName = json['display_name'] ?? json['formatted'] ?? '';
     final address = json['address'] as Map<String, dynamic>? ?? {};
-    
-    // Try to get house number and road to construct a better address
+
     final houseNumber = address['house_number']?.toString() ?? '';
-    final road = address['road'] ?? '';
-    
-    String finalAddress = displayName;
+    final road = address['road'] ?? address['residential'] ?? address['pedestrian'] ?? '';
+    final suburb = address['suburb'] ?? address['neighbourhood'] ?? '';
+    final city = address['city'] ?? address['town'] ?? address['village'] ?? '';
+
+    String finalAddress = '';
     if (houseNumber.isNotEmpty && road.isNotEmpty) {
-      final suburb = address['suburb'] ?? address['neighbourhood'] ?? '';
-      final city = address['city'] ?? address['town'] ?? address['village'] ?? '';
-      
       finalAddress = '$houseNumber $road';
-      if (suburb.isNotEmpty) finalAddress += ', $suburb';
-      if (city.isNotEmpty) finalAddress += ', $city';
+      if (city.isNotEmpty) {
+        finalAddress += ', $city';
+      } else if (suburb.isNotEmpty) {
+        finalAddress += ', $suburb';
+      }
+    } else if (road.isNotEmpty) {
+      finalAddress = road;
+      if (city.isNotEmpty) {
+        finalAddress += ', $city';
+      } else if (suburb.isNotEmpty) {
+        finalAddress += ', $suburb';
+      }
     }
-    
+
+    if (finalAddress.isEmpty) {
+      finalAddress = _shortAddress(displayName);
+    }
+
     return AddressSearchResult(
       address: finalAddress,
       latitude: double.tryParse(json['lat']?.toString() ?? ''),
       longitude: double.tryParse(json['lon']?.toString() ?? ''),
-      suburb: address['suburb'] ?? address['neighbourhood'],
-      city: address['city'] ?? address['town'] ?? address['village'],
+      suburb: suburb,
+      city: city,
       region: address['state'] ?? address['region'],
       postcode: address['postcode'],
       country: address['country'] ?? '',
     );
   }
-  
-  // Helper method to check if address contains a number
-  static bool _containsNumber(String text) {
-    return RegExp(r'\d').hasMatch(text);
+
+  static String _shortAddress(String value) {
+    var trimmed = value.trim();
+    final removeMarkers = ['New Zealand', 'Aotearoa'];
+    for (final marker in removeMarkers) {
+      if (trimmed.endsWith(marker)) {
+        trimmed = trimmed.substring(0, trimmed.length - marker.length).trim();
+      }
+      if (trimmed.endsWith(',')) {
+        trimmed = trimmed.substring(0, trimmed.length - 1).trim();
+      }
+    }
+
+    final parts = trimmed.split(',').map((part) => part.trim()).where((part) => part.isNotEmpty).toList();
+    if (parts.length <= 3) {
+      return parts.join(', ');
+    }
+    return parts.take(3).join(', ');
   }
 
   // Create a copy with distance calculated
@@ -233,16 +270,25 @@ class AddressSearchService {
   /// Search addresses using New Zealand's LINZ API (free)
   static Future<List<AddressSearchResult>> _searchNewZealandAddresses(String query, int limit) async {
     try {
-      // LINZ Address Search API - free for up to 1000 requests per day
-      final encodedQuery = Uri.encodeComponent(query);
-      final url = 'https://api.linz.govt.nz/v1/search?q=$encodedQuery&count=$limit&format=json';
+      final uri = Uri.https(
+        'api.linz.govt.nz',
+        '/v1/search',
+        {
+          'q': query,
+          'count': limit.toString(),
+          'format': 'json',
+        },
+      );
       
       final response = await http.get(
-        Uri.parse(url),
+        uri,
         headers: {
           'Accept': 'application/json',
           'User-Agent': 'SoleTradie Mobile App',
         },
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw Exception('LINZ API timeout'),
       );
 
       if (response.statusCode == 200) {
@@ -254,47 +300,67 @@ class AddressSearchService {
             .where((result) => result.address.isNotEmpty)
             .toList();
       } else if (response.statusCode == 429) {
-        // Rate limit exceeded, fallback to OpenStreetMap
+        print('LINZ API rate limit reached, falling back to OpenStreetMap');
         return _searchOpenStreetMapAddresses(query, 'New Zealand', limit);
       } else {
         print('LINZ API error: ${response.statusCode} - ${response.body}');
-        // Fallback to OpenStreetMap for New Zealand
         return _searchOpenStreetMapAddresses(query, 'New Zealand', limit);
       }
     } catch (e) {
       print('Error searching NZ addresses: $e');
-      // Fallback to OpenStreetMap
       return _searchOpenStreetMapAddresses(query, 'New Zealand', limit);
     }
   }
 
   /// Search addresses using OpenStreetMap Nominatim API (free, fallback)
-  static Future<List<AddressSearchResult>> _searchOpenStreetMapAddresses(String query, String country, int limit) async {
+  static Future<List<AddressSearchResult>> _searchOpenStreetMapAddresses(String query, String country, int limit, {bool retry = true}) async {
     try {
-      final encodedQuery = Uri.encodeComponent('$query, $country');
-      final url = 'https://nominatim.openstreetmap.org/search?q=$encodedQuery&format=json&limit=$limit&addressdetails=1';
+      final uri = Uri.https(
+        'nominatim.openstreetmap.org',
+        '/search',
+        {
+          'q': query,
+          'format': 'json',
+          'limit': limit.toString(),
+          'addressdetails': '1',
+          if (country == 'New Zealand') 'countrycodes': 'nz',
+        },
+      );
       
       final response = await http.get(
-        Uri.parse(url),
+        uri,
         headers: {
           'Accept': 'application/json',
-          'User-Agent': 'SoleTradie Mobile App (contact: developer@example.com)',
+          'User-Agent': 'SoleTradie Mobile App',
+          'Referer': 'https://nominatim.openstreetmap.org/',
+        },
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          throw Exception('OpenStreetMap API timeout');
         },
       );
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
-        
+
         return data
             .map((item) => AddressSearchResult.fromJson(item, 'OSM'))
             .where((result) => result.address.isNotEmpty)
             .toList();
+      } else if (response.statusCode == 429 && retry) {
+        print('⚠️ OpenStreetMap rate limit hit, retrying once after delay.');
+        await Future.delayed(const Duration(seconds: 2));
+        return _searchOpenStreetMapAddresses(query, country, limit, retry: false);
+      } else if (response.statusCode == 403) {
+        print('⚠️ OpenStreetMap API blocked (403). Ensure User-Agent is set correctly.');
+        return [];
       } else {
-        print('OpenStreetMap API error: ${response.statusCode}');
+        print('⚠️ OpenStreetMap API error: ${response.statusCode}');
         return [];
       }
     } catch (e) {
-      print('Error searching addresses via OpenStreetMap: $e');
+      print('⚠️ Error searching addresses via OpenStreetMap: $e');
       return [];
     }
   }

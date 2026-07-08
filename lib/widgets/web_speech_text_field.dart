@@ -224,7 +224,7 @@ class _WebSpeechTextFieldState extends State<WebSpeechTextField> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Main text field
-        TextField(
+        TextField(textCapitalization: TextCapitalization.sentences, 
           controller: widget.controller,
           decoration: InputDecoration(
             labelText: widget.labelText,

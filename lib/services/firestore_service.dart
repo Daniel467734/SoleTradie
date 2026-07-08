@@ -304,13 +304,16 @@ class FirestoreService {
   }
 
   /// Get price book items with pagination
-  static Future<List<PriceBookItem>> getPriceBookItems({int limit = 100, DocumentSnapshot? startAfter}) async {
+  static Future<List<PriceBookItem>> getPriceBookItems({int? limit, DocumentSnapshot? startAfter}) async {
     if (currentUserId == null) throw Exception('User not authenticated');
     final priceBookCollection = _priceBook;
     if (priceBookCollection == null) throw Exception('Firebase not initialized');
     
-    Query query = priceBookCollection.orderBy('name').limit(limit);
+    Query query = priceBookCollection.orderBy('name');
     
+    if (limit != null) {
+      query = query.limit(limit);
+    }
     if (startAfter != null) {
       query = query.startAfterDocument(startAfter);
     }
@@ -330,7 +333,6 @@ class FirestoreService {
     
     final snapshot = await priceBookCollection
         .orderBy('name')
-        .limit(100)
         .get();
         
     return snapshot.docs

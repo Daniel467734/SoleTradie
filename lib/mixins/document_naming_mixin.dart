@@ -8,20 +8,23 @@ mixin DocumentNamingMixin {
     required String documentType,
     required Job job,
     List<String>? existingAttachments,
+    String? documentNumber,
   }) {
     return DocumentNamingService.generatePdfFileName(
       documentType: documentType,
       job: job,
       existingAttachments: existingAttachments ?? job.attachments,
+      documentNumber: documentNumber,
     );
   }
 
   /// Generate filename for invoice
-  String generateInvoiceName(Job job, {List<String>? existingAttachments}) {
+  String generateInvoiceName(Job job, {List<String>? existingAttachments, String? documentNumber}) {
     return generateDocumentName(
       documentType: 'Invoice',
       job: job,
       existingAttachments: existingAttachments,
+      documentNumber: documentNumber,
     );
   }
 

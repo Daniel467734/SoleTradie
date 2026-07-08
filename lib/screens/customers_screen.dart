@@ -43,6 +43,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final phoneController = TextEditingController(text: customer?.phone ?? '');
     final addressController = TextEditingController(text: customer?.address ?? '');
     final pasteController = TextEditingController();
+    final bodyCorporateController = TextEditingController(text: customer?.bodyCorporateNumber ?? '');
     final paymentTermsOptions = [
       '7 days',
       '14 days',
@@ -71,7 +72,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 // Paste box
                 Stack(
                   children: [
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: pasteController,
                       maxLines: 4,
                       decoration: InputDecoration(
@@ -142,19 +143,19 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: companyController,
                   decoration: const InputDecoration(labelText: 'Company Name (if applicable)'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: nameController,
                   decoration: const InputDecoration(labelText: 'Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
                   decoration: const InputDecoration(labelText: 'Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: emailController,
                   decoration: const InputDecoration(labelText: 'Primary Email Address'),
                 ),
@@ -222,7 +223,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 }),
                 
                 const SizedBox(height: 16),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: phoneController,
                   decoration: const InputDecoration(labelText: 'Phone Number'),
                 ),
@@ -333,6 +334,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                TextField(textCapitalization: TextCapitalization.sentences, 
+                  controller: bodyCorporateController,
+                  decoration: const InputDecoration(
+                    labelText: 'Body Corporate Number (Optional)',
+                    prefixIcon: Icon(Icons.account_balance),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
               ],
             ),
           ),
@@ -383,6 +394,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   phone: phoneController.text.trim(),
                   address: addressController.text.trim(),
                   paymentTerms: selectedPaymentTerm,
+                  bodyCorporateNumber: bodyCorporateController.text.trim(),
                   isRemote: isRemoteCustomer,
                 );
                 
@@ -669,23 +681,23 @@ class _CustomersScreenState extends State<CustomersScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: companyController,
                   decoration: const InputDecoration(labelText: 'Company Name (if applicable)'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: nameController,
                   decoration: const InputDecoration(labelText: 'Name'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
                   decoration: const InputDecoration(labelText: 'Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: emailController,
                   decoration: const InputDecoration(labelText: 'Email Address'),
                 ),
-                TextField(
+                TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: phoneController,
                   decoration: const InputDecoration(labelText: 'Phone Number'),
                 ),
@@ -793,7 +805,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   final controller = TextEditingController();
                   return AlertDialog(
                     title: const Text('Type DELETE ALL'),
-                    content: TextField(
+                    content: TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: controller,
                       decoration: const InputDecoration(
                         labelText: 'Type "DELETE ALL" to confirm',
@@ -854,7 +866,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Add Email Address'),
-        content: TextField(
+        content: TextField(textCapitalization: TextCapitalization.sentences, 
           controller: emailController,
           decoration: const InputDecoration(
             labelText: 'Email Address',
@@ -897,6 +909,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       return c.name.toLowerCase().contains(searchLower) ||
              c.companyName.toLowerCase().contains(searchLower) ||
              c.email.toLowerCase().contains(searchLower) ||
+             c.address.toLowerCase().contains(searchLower) ||
              c.additionalEmails.any((email) => email.toLowerCase().contains(searchLower)) ||
              c.phone.contains(search);
     }).toList();
@@ -927,7 +940,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            TextField(
+            TextField(textCapitalization: TextCapitalization.sentences, 
               decoration: const InputDecoration(
                 labelText: 'Search customers',
                 prefixIcon: Icon(Icons.search),

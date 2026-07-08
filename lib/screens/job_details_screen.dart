@@ -2,32 +2,32 @@ import 'package:intl/intl.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_file/open_file.dart';
+import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:async';
 import 'estimate_builder_screen.dart';
-import 'pricebook_screen.dart';
-import 'coc_form_screen.dart';
-import 'esc_form_screen.dart';
-import 'roi_form_screen.dart';
-import 'gas_coc_form_screen.dart';
+import 'pricebook_extensive_screen.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../models/job.dart' as job_model;
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:flutter/services.dart';
-import 'package:mailer/mailer.dart';
-import 'package:mailer/smtp_server.dart';
-import '../models/estimate_build.dart';
+import '../services/email_service.dart';
 import '../models/estimate_version.dart';
 import '../models/estimate_template.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../widgets/voice_text_field.dart';
 import '../services/firestore_service.dart';
 import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart';
 import '../services/in_progress_build_service.dart';
 import '../models/in_progress_build.dart';
+import 'coc_form_screen.dart' as coc_form;
+import 'esc_form_screen.dart' as esc_form;
+import '../route_observer.dart';
+import '../services/file_library_service.dart';
+import 'todo_list_screen.dart';
+import 'attachment_viewer_screen.dart';
 
 final Map<String, Map<String, Offset>> certificateFieldPositions = {
   'COC': {
@@ -78,13 +78,15 @@ class JobDetailsScreen extends StatefulWidget {
   final job_model.Job job;
   final List<PriceBookItem> priceBook;
 
-  const JobDetailsScreen({super.key, required this.job, required this.priceBook});
+  const JobDetailsScreen(
+      {super.key, required this.job, required this.priceBook});
 
   @override
   State<JobDetailsScreen> createState() => _JobDetailsScreenState();
 }
 
-class _JobDetailsScreenState extends State<JobDetailsScreen> {
+class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
+  static const String _builderNotePrefix = '[Estimate Builder Note] ';
   List<String> notes = [];
   final noteController = TextEditingController();
   List<EstimateTemplate> _templates = [];
@@ -92,24 +94,257 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
   bool _editing = false;
   late TextEditingController _titleController;
   late TextEditingController _descController;
-  
+
   // Auto-save functionality
   Timer? _saveDebounce;
+  BuildContext? _loadingDialogContext;
 
-  Future<EstimateTemplate?> showTemplatePickerDialog(BuildContext context, List<EstimateTemplate> templates) async {
+  /// Asks the user up-front what type of document a new Builder should
+  /// create ("In Progress Estimate/Quote/Invoice Build"). The chosen type
+  /// is passed into `EstimateBuilderScreen` as `initialBuildType`, and can
+  /// still be changed later from within the builder itself.
+  Future<String?> _showSelectBuildTypeDialog(BuildContext context) {
+    return showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Start Builder'),
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24.0, vertical: 4.0),
+            child: Text('What type of document is this build for?',
+                style: TextStyle(color: Colors.black54)),
+          ),
+          const SizedBox(height: 8),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'estimate'),
+            child: const Row(
+              children: [
+                Icon(Icons.description),
+                SizedBox(width: 8),
+                Text('Estimate'),
+              ],
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'quote'),
+            child: const Row(
+              children: [
+                Icon(Icons.request_quote),
+                SizedBox(width: 8),
+                Text('Quote'),
+              ],
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, 'invoice'),
+            child: const Row(
+              children: [
+                Icon(Icons.receipt_long),
+                SizedBox(width: 8),
+                Text('Invoice'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Reads the build type ('estimate' | 'quote' | 'invoice') that was saved
+  /// alongside an in-progress build's other data, defaulting to 'estimate'
+  /// for older builds saved before this field existed.
+  String _buildTypeOf(InProgressBuild build) {
+    final saved = build.currentVersion.additionalData?['buildType'];
+    return (saved is String && saved.isNotEmpty) ? saved : 'estimate';
+  }
+
+  String _buildTypeLabel(String type) {
+    switch (type) {
+      case 'invoice':
+        return 'Invoice';
+      case 'quote':
+        return 'Quote';
+      case 'estimate':
+      default:
+        return 'Estimate';
+    }
+  }
+
+  IconData _buildTypeIcon(String type) {
+    switch (type) {
+      case 'invoice':
+        return Icons.receipt_long;
+      case 'quote':
+        return Icons.request_quote;
+      case 'estimate':
+      default:
+        return Icons.description;
+    }
+  }
+
+
+  Future<EstimateTemplate?> showTemplatePickerDialog(
+      BuildContext context, List<EstimateTemplate> templates) async {
     // Always include a blank template option
     final blankTemplate = EstimateTemplate(
       name: 'Blank Template',
       items: [],
       subsections: ['Labour', 'Materials'],
+      type: 'build',
     );
-    
-    final allTemplates = [blankTemplate, ...templates];
-    
+
+    final buildTemplates = templates.where((t) => t.type == 'build').toList();
+    final allTemplates = [blankTemplate, ...buildTemplates];
+    String searchQuery = '';
+
     return showDialog<EstimateTemplate>(
       context: context,
-      builder: (context) => _TemplatePickerDialog(templates: allTemplates),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          final filteredTemplates = searchQuery.trim().isEmpty
+              ? allTemplates
+              : allTemplates.where((template) {
+                  final searchLower = searchQuery.toLowerCase();
+                  return template.name.toLowerCase().contains(searchLower);
+                }).toList();
+          return AlertDialog(
+            title: const Text('Select Template'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    decoration: InputDecoration(
+                      labelText: 'Search templates',
+                      suffixIcon: searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () => setState(() => searchQuery = ''),
+                            )
+                          : null,
+                    ),
+                    onChanged: (value) => setState(() => searchQuery = value),
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: filteredTemplates.length,
+                      itemBuilder: (context, index) {
+                        final template = filteredTemplates[index];
+                        final isBlank = template.name == 'Blank Template';
+                        return ListTile(
+                          contentPadding:
+                              const EdgeInsets.symmetric(horizontal: 0.0),
+                          title: Text(template.name),
+                          trailing: isBlank
+                              ? null
+                              : IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  tooltip: 'Delete template',
+                                  onPressed: () async {
+                                    final firstConfirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('Delete Template'),
+                                        content: Text(
+                                            'Delete the build template "${template.name}"?'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          ElevatedButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (firstConfirm != true) return;
+
+                                    final secondConfirm =
+                                        await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('Confirm Delete'),
+                                        content: Text(
+                                            'Are you sure you want to permanently remove "${template.name}" from build templates? This cannot be undone.'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                                backgroundColor: Colors.red),
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('Delete Forever'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (secondConfirm != true) return;
+
+                                    setState(() {
+                                      allTemplates.remove(template);
+                                      buildTemplates.remove(template);
+                                    });
+                                    _templates.removeWhere((t) =>
+                                        t.name == template.name &&
+                                        t.type == 'build');
+                                    await _saveTemplates();
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                              'Deleted build template "${template.name}".'),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                ),
+                          onTap: () => Navigator.pop(context, template),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+            ],
+          );
+        },
+      ),
     );
+  }
+
+  Future<void> _saveTemplates() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonList = _templates.map((t) => jsonEncode(t.toJson())).toList();
+    await prefs.setStringList('estimate_templates', jsonList);
+  }
+
+  Future<void> _loadTemplates() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonList = prefs.getStringList('estimate_templates') ?? [];
+    setState(() {
+      _templates = jsonList
+          .map((s) => EstimateTemplate.fromJson(jsonDecode(s)))
+          .toList();
+    });
   }
 
   @override
@@ -125,11 +360,27 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     _saveDebounce?.cancel();
     _titleController.dispose();
     _descController.dispose();
+    noteController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didPopNext() {
+    _reloadJob();
   }
 
   Future<void> _saveTitleAndDescription() async {
@@ -142,29 +393,24 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
     if (mounted) Navigator.pop(context, true); // Go back to jobs screen
   }
 
-  Future<void> _loadTemplates() async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonList = prefs.getStringList('estimate_templates') ?? [];
-    setState(() {
-      _templates = jsonList.map((s) => EstimateTemplate.fromJson(jsonDecode(s))).toList();
-    });
-  }
-
   void _loadInProgressBuilds() async {
     // Load in-progress builds from the proper service
     try {
-      final builds = await InProgressBuildService.getBuildsForJob(widget.job.id);
+      final builds =
+          await InProgressBuildService.getBuildsForJob(widget.job.id);
       setState(() {
         // Convert InProgressBuild to EstimateVersion for compatibility
-        inProgressBuilds = builds.map((build) => EstimateVersion(
-          id: build.id,
-          type: 'in_progress',
-          timestamp: build.lastModified,
-          items: build.currentVersion.items,
-          status: 'in_progress',
-          amount: build.currentVersion.totalAmount,
-          profit: build.currentVersion.totalProfit,
-        )).toList();
+        inProgressBuilds = builds
+            .map((build) => EstimateVersion(
+                  id: build.id,
+                  type: 'in_progress',
+                  timestamp: build.lastModified,
+                  items: build.currentVersion.items,
+                  status: 'in_progress',
+                  amount: build.currentVersion.totalAmount,
+                  profit: build.currentVersion.totalProfit,
+                ))
+            .toList();
       });
     } catch (e) {
       setState(() {
@@ -173,25 +419,36 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
     }
   }
 
+  String _displayNoteText(String note) {
+    if (note.startsWith(_builderNotePrefix)) {
+      return note.substring(_builderNotePrefix.length);
+    }
+    return note;
+  }
+
+  bool _isBuilderNote(String note) => note.startsWith(_builderNotePrefix);
+
   Future<void> _saveJob() async {
     try {
       // Sync invoices before saving
       widget.job.syncInvoices();
       widget.job.notes = notes;
-      
+
       // Save to local file for backward compatibility
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/job_${widget.job.id}.json');
       await file.writeAsString(jsonEncode(widget.job.toJson()));
-      
+
+      // Also update the main jobs list file so attachments and job changes persist
+      await widget.job.save();
+
       // Save to cloud using hybrid storage system
       await FirestoreService.saveJob(widget.job);
-      
+
       // Trigger sync through scheduler for optimal cloud sync
       await SyncScheduler.syncNow(DataType.jobs);
-      
     } catch (e) {
-      // Still show success for local save even if cloud fails
+      // Still show success for local save
     }
   }
 
@@ -212,7 +469,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
     try {
       // First try to load from Firestore (cloud) to get the latest data
       final cloudJob = await FirestoreService.getJob(widget.job.id);
-      
+
       if (cloudJob != null) {
         setState(() {
           widget.job.estimateVersions = cloudJob.estimateVersions;
@@ -231,13 +488,14 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
     // Fallback to local files - try main jobs.json first for consistency
     final dir = await getApplicationDocumentsDirectory();
     final mainJobsFile = File('${dir.path}/jobs.json');
-    
+
     if (await mainJobsFile.exists()) {
       try {
         final jsonString = await mainJobsFile.readAsString();
         final List<dynamic> jsonList = jsonDecode(jsonString);
-        final jobData = jsonList.firstWhere((j) => j['id'] == widget.job.id, orElse: () => null);
-        
+        final jobData = jsonList.firstWhere((j) => j['id'] == widget.job.id,
+            orElse: () => null);
+
         if (jobData != null) {
           final updatedJob = job_model.Job.fromJson(jobData);
           setState(() {
@@ -249,10 +507,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
           });
           return;
         }
-      } catch (e) {
-      }
+      } catch (e) {}
     }
-    
+
     // Final fallback to individual job file
     final jobFile = File('${dir.path}/job_${widget.job.id}.json');
     if (await jobFile.exists()) {
@@ -265,128 +522,239 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
         widget.job.syncInvoices();
       });
     }
-    
+
     // Always refresh in-progress builds when reloading job
     _loadInProgressBuilds();
   }
 
   Future<void> _emailCustomer() async {
-    final email = widget.job.customerEmail;
-    if (email == null || email.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No email address available for this customer.')),
-      );
-      return;
-    }
-    final customerFirstName = (widget.job.customerName ?? '').split(' ').first;
-    final attachments = widget.job.attachments ?? [];
+    final initialEmail = widget.job.customerEmail?.trim() ?? '';
+    final recipientController = TextEditingController();
+    final selectedAttachments = await _promptEmailAttachments();
+    if (selectedAttachments == null) return;
 
-    // Pick attachments
-    List<String> selectedAttachments = [];
-    if (attachments.isNotEmpty) {
-      selectedAttachments = await showDialog<List<String>>(
-        context: context,
-        builder: (context) {
-          final selected = <String>{};
-          return StatefulBuilder(
-            builder: (context, setState) => AlertDialog(
-              title: const Text('Select Attachments'),
-              content: SizedBox(
-                width: double.maxFinite,
-                child: ListView(
-                  shrinkWrap: true,
-                  children: attachments.map((file) {
-                    return CheckboxListTile(
-                      value: selected.contains(file),
-                      title: Text(file.split('/').last),
-                      onChanged: (checked) {
-                        setState(() {
-                          if (checked == true) {
-                            selected.add(file);
-                          } else {
-                            selected.remove(file);
-                          }
-                        });
-                      },
-                    );
-                  }).toList(),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, <String>[]),
-                  child: const Text('None'),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context, selected.toList()),
-                  child: const Text('Attach Selected'),
-                ),
-              ],
-            ),
-          );
-        },
-      ) ?? [];
-    }
+    final recipients = <String>[];
+    if (initialEmail.isNotEmpty) recipients.add(initialEmail);
 
-    // Prefill subject/body
+    final customerName = widget.job.emailCustomerName;
     final emailType = getEmailTypeFromAttachments(selectedAttachments);
     final prefill = await getPrefilledEmail(
       emailType: emailType,
-      customerFirstName: customerFirstName,
+      customerName: customerName,
     );
     final subjectController = TextEditingController(text: prefill['subject']);
     final bodyController = TextEditingController(text: prefill['body']);
 
-    // Edit dialog
-    final shouldSend = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Email'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: subjectController,
-              decoration: const InputDecoration(labelText: 'Subject'),
+    // Loop so that if sending fails, the user is taken straight back to this
+    // same "Edit Email" dialog with their typed recipients/subject/body
+    // retained (the list/controllers are declared outside the loop so they
+    // survive across attempts) instead of losing their draft after a failed
+    // send. The loop only exits via an explicit `return` — either because
+    // the user cancelled a dialog, or because the email sent successfully.
+    while (true) {
+      final shouldSend = await showDialog<bool>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Edit Email'),
+            content: SingleChildScrollView(
+              child: Padding(
+                padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(context).viewInsets.bottom),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Recipients',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (recipients.isEmpty)
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text('No recipient added yet. Add one below.'),
+                      ),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: recipients
+                          .map(
+                            (address) => InputChip(
+                              label: Text(address),
+                              onDeleted: () {
+                                setState(() {
+                                  recipients.remove(address);
+                                });
+                              },
+                            ),
+                          )
+                          .toList(),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            textCapitalization: TextCapitalization.none,
+                            controller: recipientController,
+                            keyboardType: TextInputType.emailAddress,
+                            decoration: const InputDecoration(
+                              labelText: 'Add recipient',
+                              hintText: 'email@example.com',
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add),
+                          tooltip: 'Add recipient',
+                          onPressed: () {
+                            final candidate = recipientController.text.trim();
+                            if (candidate.isEmpty) return;
+                            if (!recipients.contains(candidate)) {
+                              setState(() {
+                                recipients.add(candidate);
+                              });
+                            }
+                            recipientController.clear();
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      textCapitalization: TextCapitalization.sentences,
+                      controller: subjectController,
+                      decoration: const InputDecoration(labelText: 'Subject'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      textCapitalization: TextCapitalization.sentences,
+                      controller: bodyController,
+                      decoration: const InputDecoration(labelText: 'Body'),
+                      maxLines: 10,
+                    ),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: bodyController,
-              decoration: const InputDecoration(labelText: 'Body'),
-              maxLines: 10,
-            ),
-          ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  if (recipients.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Please add at least one recipient.'),
+                      ),
+                    );
+                    return;
+                  }
+                  Navigator.pop(context, true);
+                },
+                child: const Text('Send'),
+              ),
+            ],
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Send'),
-          ),
-        ],
-      ),
-    );
+      );
 
-    if (shouldSend == true) {
+      if (shouldSend != true) return;
+
       final delay = await showDelayPickerDialog(context);
       if (delay == null) return;
       if (delay > Duration.zero) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Email will be sent in ${delay.inMinutes} minutes')),
+          SnackBar(
+              content:
+                  Text('Email will be sent in ${delay.inMinutes} minutes')),
         );
         await Future.delayed(delay);
       }
-      
+
+      _showLoadingDialog('Sending email...');
+      debugPrint('Email send: loading dialog shown, waiting before send');
+      await Future.delayed(const Duration(milliseconds: 100));
+      var sendSucceeded = false;
       try {
+        debugPrint(
+            'Email send: calling sendEmailViaSmtp to ${recipients.join(', ')}');
         await sendEmailViaSmtp(
-          toEmail: email,
+          toEmails: recipients,
           subject: subjectController.text,
           body: bodyController.text,
           attachmentPaths: selectedAttachments,
-        );
+        ).timeout(const Duration(seconds: 60));
+        debugPrint('Email send: sendEmailViaSmtp completed');
+        sendSucceeded = true;
+        _closeLoadingDialog();
+
+        final hasInvoiceAttachment = selectedAttachments
+            .any((path) => path.toLowerCase().contains('invoice'));
+        final hasEstimateAttachment = selectedAttachments
+            .any((path) => path.toLowerCase().contains('estimate'));
+
+        final selectedAttachmentPaths = selectedAttachments
+            .map((path) => path.toLowerCase())
+            .toSet();
+
+        for (final inv in widget.job.invoices) {
+          if (inv.filePath != null && selectedAttachmentPaths.contains(inv.filePath!.toLowerCase())) {
+            inv.emailSent = true;
+          }
+        }
+        for (final version in widget.job.estimateVersions) {
+          if (version.filePath != null && selectedAttachmentPaths.contains(version.filePath!.toLowerCase())) {
+            version.emailSent = true;
+          }
+        }
+
+        if (hasInvoiceAttachment && hasEstimateAttachment) {
+          widget.job.onEstimateAndInvoiceSent(
+            'email-${DateTime.now().millisecondsSinceEpoch}-estimate',
+            'email-${DateTime.now().millisecondsSinceEpoch}-invoice',
+          );
+        } else if (emailType == 'invoice') {
+          widget.job
+              .onInvoiceSent('email-${DateTime.now().millisecondsSinceEpoch}');
+        } else if (emailType == 'estimate' || emailType == 'quote') {
+          widget.job
+              .onEstimateSent('email-${DateTime.now().millisecondsSinceEpoch}');
+        }
+
+        if (hasInvoiceAttachment && mounted) {
+          final shouldComplete = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('Invoice Sent'),
+              content: const Text(
+                  'Invoice sent successfully. Mark this job as complete?'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('No'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Yes, complete'),
+                ),
+              ],
+            ),
+          );
+          if (shouldComplete == true) {
+            widget.job.onJobComplete();
+            await _saveJob();
+            if (mounted) setState(() {});
+          }
+        }
+
+        await _saveJob();
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -396,712 +764,731 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> {
           );
         }
       } catch (e) {
+        debugPrint('Email send failed: $e');
+        _closeLoadingDialog();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Failed to send email: ${e.toString()}'),
+              content: Text(
+                  'Failed to send email: ${e.toString()}. Taking you back to the email editor — your message has been kept.'),
               backgroundColor: Colors.red,
               duration: const Duration(seconds: 5),
             ),
           );
         }
+      } finally {
+        if (mounted) {
+          debugPrint('Email send: closing loading dialog');
+          _closeLoadingDialog();
+          debugPrint('Email send: loading dialog closed');
+        }
       }
+
+      if (sendSucceeded) return;
+      // Sending failed: if the screen is still mounted, loop back to the top
+      // so the "Edit Email" dialog reopens with the same subjectController /
+      // bodyController / recipients, retaining everything the user typed.
+      if (!mounted) return;
     }
   }
 
-  Future<void> _showCertificateTypePicker() async {
-    // Check available licenses
-    final prefs = await SharedPreferences.getInstance();
-    final hasElectricalLicense = (prefs.getString('electrical_license') ?? '').isNotEmpty;
-    final hasGasLicense = (prefs.getString('gas_fitting_license') ?? '').isNotEmpty;
-    
-    // Build list of available certificate options
-    List<Widget> certificateOptions = [];
-    
-    if (hasElectricalLicense) {
-      certificateOptions.addAll([
-        ListTile(
-          leading: const Icon(Icons.assignment),
-          title: const Text('ESC'),
-          onTap: () => Navigator.pop(context, 'ESC'),
-        ),
-        ListTile(
-          leading: const Icon(Icons.assignment),
-          title: const Text('COC'),
-          onTap: () => Navigator.pop(context, 'COC'),
-        ),
-        ListTile(
-          leading: const Icon(Icons.assignment),
-          title: const Text('ROI'),
-          onTap: () => Navigator.pop(context, 'ROI'),
-        ),
-      ]);
-    }
-    
-    if (hasGasLicense) {
-      certificateOptions.add(
-        ListTile(
-          leading: const Icon(Icons.local_gas_station, color: Colors.orange),
-          title: const Text('Gas COC'),
-          onTap: () => Navigator.pop(context, 'GAS_COC'),
-        ),
-      );
-    }
-    
-    // Show message if no licenses are available
-    if (certificateOptions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please add your license numbers in Settings to generate certificates'),
-        ),
-      );
-      return;
-    }
-    
-    final certType = await showModalBottomSheet<String>(
+  Future<List<String>?> _promptEmailAttachments() async {
+    // Stage 1: show the job's own attachments first, selectable/deselectable.
+    // From there the user can either finish with just those (or none), or
+    // continue on to the File Library to add more before finishing.
+    return _showJobAttachmentsPicker();
+  }
+
+  /// Stage 2 of the email-attachment flow: lets the user pick from the
+  /// shared File Library (files reusable across jobs), optionally starting
+  /// with a set of already-selected attachments carried over from Stage 1
+  /// (the job's own attachments). Also offers a floating "+" button to add
+  /// brand new files (PDF or Photo) straight into the Library, prompting
+  /// for a name to save them under.
+  Future<List<String>?> _showFileLibraryPicker({
+    List<String>? initialSelected,
+  }) async {
+    final selectedAttachments = <String>{...?initialSelected};
+    String searchQuery = '';
+
+    return showDialog<List<String>>(
       context: context,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom + 
-                  MediaQuery.of(context).padding.bottom + 16.0,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: certificateOptions,
-        ),
-      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Select from File Library'),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 420,
+                child: Stack(
+                  children: [
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextField(
+                          decoration: InputDecoration(
+                            labelText: 'Search files',
+                            prefixIcon: const Icon(Icons.search),
+                            suffixIcon: searchQuery.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () =>
+                                        setState(() => searchQuery = ''),
+                                  )
+                                : null,
+                          ),
+                          onChanged: (value) =>
+                              setState(() => searchQuery = value),
+                        ),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: FutureBuilder<List<FileLibraryItem>>(
+                            future: searchQuery.trim().isEmpty
+                                ? FileLibraryService.getAllItems()
+                                : FileLibraryService.searchItems(searchQuery),
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const Center(
+                                    child: CircularProgressIndicator());
+                              }
+
+                              if (snapshot.hasError) {
+                                return Center(
+                                    child: Text('Error: ${snapshot.error}'));
+                              }
+
+                              final items = snapshot.data ?? [];
+
+                              if (items.isEmpty) {
+                                return const Center(
+                                  child: Text(
+                                    'No files in library yet. Tap + to add one.',
+                                  ),
+                                );
+                              }
+
+                              return ListView.builder(
+                                shrinkWrap: true,
+                                padding: const EdgeInsets.only(bottom: 64),
+                                itemCount: items.length,
+                                itemBuilder: (context, index) {
+                                  final item = items[index];
+                                  final isSelected = selectedAttachments
+                                      .contains(item.filePath);
+
+                                  return CheckboxListTile(
+                                    value: isSelected,
+                                    secondary:
+                                        _buildAttachmentLeadingThumbnail(
+                                            item.filePath),
+                                    title: Text(item.name),
+                                    subtitle: Text(
+                                      'Used ${item.usageCount}x • ${FileLibraryService.getFileSize(item)}',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                    onChanged: (value) {
+                                      setState(() {
+                                        if (value == true) {
+                                          selectedAttachments
+                                              .add(item.filePath);
+                                        } else {
+                                          selectedAttachments
+                                              .remove(item.filePath);
+                                        }
+                                      });
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    Positioned(
+                      bottom: 4,
+                      right: 4,
+                      child: FloatingActionButton(
+                        heroTag: 'fileLibraryAddFab',
+                        tooltip: 'Add new file to Library',
+                        onPressed: () async {
+                          final result = await FilePicker.platform.pickFiles(
+                            allowMultiple: true,
+                            type: FileType.any,
+                          );
+                          if (result == null || result.paths.isEmpty) return;
+
+                          for (final path
+                              in result.paths.whereType<String>()) {
+                            final renamed = await _promptPhotoRename(
+                              path.split('/').last,
+                              title: 'Rename File',
+                              label: 'File name',
+                            );
+                            if (renamed == null) continue;
+
+                            final addedItem = await FileLibraryService.addFile(
+                              File(path),
+                              renamed,
+                            );
+                            if (addedItem != null) {
+                              selectedAttachments.add(addedItem.filePath);
+                            }
+                          }
+
+                          setState(() {});
+                        },
+                        child: const Icon(Icons.add),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () =>
+                      Navigator.pop(context, selectedAttachments.toList()),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
-    if (certType != null) {
-      await _showCertificateInfoForm(certType);
+  }
+
+  /// Stage 1 of the email-attachment flow: shows the job's own attachments
+  /// (photos + other files) first, selectable/deselectable. From here the
+  /// user can Cancel (back to Job Details), jump to the File Library to add
+  /// more (merging with whatever is selected here), or finish immediately
+  /// with just the current selection (or none at all).
+  Future<List<String>?> _showJobAttachmentsPicker() async {
+    final currentAttachments = _getAttachmentFilePaths();
+    final selectedAttachments = <String>{};
+
+    return showDialog<List<String>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            // Separate images from other files
+            final imageExtensions = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'};
+            final images = currentAttachments
+                .where((file) =>
+                    imageExtensions.contains(file.split('.').last.toLowerCase()))
+                .toList();
+            final otherFiles = currentAttachments
+                .where((file) =>
+                    !imageExtensions.contains(file.split('.').last.toLowerCase()))
+                .toList();
+            final hasSelection = selectedAttachments.isNotEmpty;
+
+            return AlertDialog(
+              title: const Text('Select Attachments'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (currentAttachments.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 12.0),
+                        child: Text(
+                          'No attachments on this job yet. Use "Add from '
+                          'Library" to attach a saved file, or continue '
+                          'with no attachments.',
+                        ),
+                      ),
+                    if (images.isNotEmpty) ...[
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Photos',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: GridView.builder(
+                          shrinkWrap: true,
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: images.length,
+                          itemBuilder: (context, index) {
+                            final filePath = images[index];
+                            final fileName = filePath.split('/').last;
+                            final isSelected =
+                                selectedAttachments.contains(filePath);
+
+                            return GestureDetector(
+                              onTap: () {
+                                // If not in selection mode (dialog is for viewing), open viewer
+                                // Otherwise, toggle selection
+                                setState(() {
+                                  if (isSelected) {
+                                    selectedAttachments.remove(filePath);
+                                  } else {
+                                    selectedAttachments.add(filePath);
+                                  }
+                                });
+                              },
+                              onLongPress: () {
+                                // Long press to open full-screen viewer
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => AttachmentViewerScreen(
+                                      attachmentPaths: images,
+                                      initialIndex: images.indexOf(filePath),
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: Stack(
+                                children: [
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? Colors.blue
+                                            : Colors.grey[300]!,
+                                        width: isSelected ? 3 : 1,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(7),
+                                      child: Image.file(
+                                        File(filePath),
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error,
+                                            stackTrace) {
+                                          return Container(
+                                            color: Colors.grey[300],
+                                            child: const Center(
+                                              child: Icon(
+                                                Icons.broken_image,
+                                                color: Colors.grey,
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  if (isSelected)
+                                    Positioned(
+                                      top: 4,
+                                      right: 4,
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(
+                                          Icons.check,
+                                          color: Colors.white,
+                                          size: 16,
+                                        ),
+                                      ),
+                                    ),
+                                  Positioned(
+                                    bottom: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: Container(
+                                      color: Colors.black54,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                        vertical: 2,
+                                      ),
+                                      child: Text(
+                                        fileName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                    if (otherFiles.isNotEmpty) ...[
+                      if (images.isNotEmpty) const SizedBox(height: 16),
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Other Files',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: otherFiles.length,
+                          itemBuilder: (context, index) {
+                            final filePath = otherFiles[index];
+                            final fileName = filePath.split('/').last;
+                            final isSelected =
+                                selectedAttachments.contains(filePath);
+
+                            return CheckboxListTile(
+                              value: isSelected,
+                              secondary:
+                                  _buildAttachmentLeadingThumbnail(filePath),
+                              title: Text(fileName),
+                              subtitle: Text(
+                                filePath,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              onChanged: (value) {
+                                setState(() {
+                                  if (value == true) {
+                                    selectedAttachments.add(filePath);
+                                  } else {
+                                    selectedAttachments.remove(filePath);
+                                  }
+                                });
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, null),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final libraryResult = await _showFileLibraryPicker(
+                      initialSelected: selectedAttachments.toList(),
+                    );
+                    // If the library picker was itself cancelled, stay on
+                    // this Stage 1 dialog with the selection unchanged.
+                    if (libraryResult == null) return;
+                    if (!context.mounted) return;
+                    Navigator.pop(context, libraryResult);
+                  },
+                  child: Text(
+                    hasSelection
+                        ? 'Add attachments and From Library'
+                        : 'Add from Library',
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: () =>
+                      Navigator.pop(context, selectedAttachments.toList()),
+                  child: Text(hasSelection ? 'Add attachments' : 'No attachments'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  List<String> _getAttachmentFilePaths() {
+    final attachmentPaths = <String>{};
+    attachmentPaths.addAll(widget.job.attachments ?? []);
+    attachmentPaths.addAll(widget.job.invoiceVersions
+        .map((invoice) => invoice.filePath)
+        .whereType<String>());
+    attachmentPaths.addAll(widget.job.estimates
+        .map((estimate) => estimate.filePath)
+        .whereType<String>());
+    attachmentPaths.addAll(widget.job.estimateVersions
+        .map((version) => version.filePath)
+        .whereType<String>());
+    return attachmentPaths.toList();
+  }
+
+  /// Builds a small leading thumbnail for an attachment list tile: an
+  /// actual image preview for photos, a rendered first-page preview for
+  /// PDFs (via [PdfThumbnail]), or a generic file icon for anything else.
+  Widget _buildAttachmentLeadingThumbnail(String filePath) {
+    final extension = filePath.split('.').last.toLowerCase();
+    const imageExtensions = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'};
+
+    if (imageExtensions.contains(extension)) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: Image.file(
+          File(filePath),
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) =>
+              const Icon(Icons.broken_image),
+        ),
+      );
+    }
+
+    if (extension == 'pdf') {
+      return PdfThumbnail(filePath: filePath, width: 40, height: 40);
+    }
+
+    return const Icon(Icons.attach_file);
+  }
+
+  Future<void> _capturePhoto() async {
+    try {
+      final pickedImage = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+      );
+      if (pickedImage == null) return;
+
+      final savedPath =
+          await _savePickedPhotoWithRename(File(pickedImage.path));
+      if (savedPath == null) return;
+
+      setState(() {
+        widget.job.attachments ??= [];
+        widget.job.attachments!.add(savedPath);
+      });
+
+      await _saveJob();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to capture photo: $e')),
+        );
+      }
     }
   }
 
-  Future<void> _showCertificateInfoForm(String certType) async {
-    // Special handling for COC certificates - navigate to dedicated form
-    if (certType == 'COC') {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => CocFormScreen(job: widget.job),
-        ),
+  Future<void> _pickPhotoFromGallery() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.image,
       );
-      
-      // Reload job details when returning from COC form to refresh attachments
-      await _reloadJob();
-      setState(() {}); // Force UI refresh to show new attachments
-      
-      // Show success message if PDF was generated
-      if (result == true && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('COC PDF generated and added to job attachments!'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: 'View',
-              textColor: Colors.white,
-              onPressed: () {
-                // Scroll to attachments section if possible
-                // This could be enhanced to jump to the attachments section
-              },
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    
-    // Special handling for Gas COC certificates - navigate to dedicated form
-    if (certType == 'GAS_COC') {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => GasCocFormScreen(job: widget.job),
-        ),
-      );
-      
-      // Reload job details when returning from Gas COC form to refresh attachments
-      await _reloadJob();
-      setState(() {}); // Force UI refresh to show new attachments
-      
-      // Show success message if PDF was generated
-      if (result == true && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Gas COC PDF generated and added to job attachments!'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: 'View',
-              textColor: Colors.white,
-              onPressed: () {
-                // Scroll to attachments section if possible
-              },
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    
-    // Special handling for ESC certificates - navigate to dedicated form
-    if (certType == 'ESC') {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => EscFormScreen(job: widget.job),
-        ),
-      );
-      
-      // Reload job details when returning from ESC form to refresh attachments
-      await _reloadJob();
-      setState(() {}); // Force UI refresh to show new attachments
-      
-      // Show success message if PDF was generated
-      if (result == true && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('ESC certificate generated and added to job attachments!'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: 'View',
-              onPressed: () {
-                // Could implement opening attachments section
-              },
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    
-    // Special handling for ROI certificates - navigate to dedicated form
-    if (certType == 'ROI') {
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => RoiFormScreen(job: widget.job),
-        ),
-      );
-      
-      // Reload job details when returning from ROI form to refresh attachments
-      await _reloadJob();
-      setState(() {}); // Force UI refresh to show new attachments
-      
-      // Show success message if PDF was generated
-      if (result == true && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('ROI certificate generated and added to job attachments!'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: 'View',
-              onPressed: () {
-                // Could implement opening attachments section
-              },
-            ),
-          ),
-        );
-      }
-      return;
-    }
-    
-    // Load settings data for other certificate types
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Auto-generate reference ID based on job number
-    final jobNumber = widget.job.id;
-    final existingCertificates = widget.job.estimateVersions
-        .where((v) => v.type == 'certificate' && v.invoiceNumber?.startsWith(certType) == true)
-        .length;
-    final referenceId = existingCertificates > 0 
-        ? '$jobNumber-$certType-${existingCertificates + 1}'
-        : '$jobNumber-$certType';
+      if (result == null || result.paths.isEmpty) return;
 
-    // Get company and personal settings
-    final companyName = prefs.getString('company_name') ?? '';
-    final companyAddress = prefs.getString('company_address') ?? '';
-    final firstName = prefs.getString('first_name') ?? '';
-    final lastName = prefs.getString('last_name') ?? '';
-    
-    // Get appropriate license based on certificate type
-    String licenceNumber = '';
-    if (certType == 'GAS_COC') {
-      licenceNumber = prefs.getString('gas_fitting_license') ?? '';
-    } else {
-      // COC, ESC, ROI use electrical license
-      licenceNumber = prefs.getString('electrical_license') ?? '';
+      final savedAttachments = <String>[];
+      for (final path in result.paths.whereType<String>()) {
+        final savedPath = await _savePickedPhotoWithRename(File(path));
+        if (savedPath != null) {
+          savedAttachments.add(savedPath);
+        }
+      }
+
+      if (savedAttachments.isEmpty) return;
+
+      setState(() {
+        widget.job.attachments ??= [];
+        widget.job.attachments!.addAll(savedAttachments);
+      });
+
+      await _saveJob();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to upload photo: $e')),
+        );
+      }
+    }
+  }
+
+  Future<String?> _savePickedPhotoWithRename(File originalFile) async {
+    final extension = originalFile.path.split('.').last;
+    final suggestedName =
+        'photo_${DateTime.now().millisecondsSinceEpoch}.$extension';
+    final renamed = await _promptPhotoRename(suggestedName);
+    if (renamed == null) return null;
+
+    final safeName = _sanitizeFileName(renamed, extension);
+    final docsDir = await getApplicationDocumentsDirectory();
+    final photoDir = Directory('${docsDir.path}/job_photos');
+    if (!await photoDir.exists()) {
+      await photoDir.create(recursive: true);
     }
 
-    // Controllers with pre-filled data
-    final companyNameController = TextEditingController(text: companyName);
-    final companyAddressController = TextEditingController(text: companyAddress);
-    final fullName = '$firstName $lastName'.trim();
-    final nameController = TextEditingController(text: fullName);
-    final licenceController = TextEditingController(text: licenceNumber);
-    final customerNameController = TextEditingController(text: widget.job.customerName ?? '');
-    final customerAddressController = TextEditingController(text: widget.job.address ?? '');
-    final referenceController = TextEditingController(text: referenceId);
-    final certificateNotesController = TextEditingController(); // Certificate notes controller
-    
-    // Date controllers with today's date as default
-    final today = DateTime.now();
-    final todayStr = "${today.day}/${today.month}/${today.year}";
-    final completionDateController = TextEditingController(text: todayStr);
-    final signingDateController = TextEditingController(text: todayStr);
+    final destination =
+        await _getUniqueFile(File('${photoDir.path}/$safeName'));
+    final savedFile = await originalFile.copy(destination.path);
+    return savedFile.path;
+  }
 
-    final result = await showDialog<Map<String, String>>(
+  Future<String?> _promptPhotoRename(
+    String suggestedName, {
+    String title = 'Rename Photo',
+    String label = 'Photo file name',
+  }) async {
+    final controller = TextEditingController(text: suggestedName);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(title),
+          content: TextField(
+            textCapitalization: TextCapitalization.sentences,
+            controller: controller,
+            decoration: InputDecoration(
+              labelText: label,
+            ),
+            autofocus: true,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == null || result.trim().isEmpty) {
+      return null;
+    }
+
+    return result.trim();
+  }
+
+  String _sanitizeFileName(String fileName, String extension) {
+    var name = fileName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+    if (!name.toLowerCase().endsWith('.$extension'.toLowerCase())) {
+      name = '$name.$extension';
+    }
+    return name.replaceAll(RegExp(r'\s+'), '_');
+  }
+
+  Future<File> _getUniqueFile(File file) async {
+    if (!await file.exists()) {
+      return file;
+    }
+
+    final directory = file.parent.path;
+    final baseName = file.uri.pathSegments.last;
+    final dotIndex = baseName.lastIndexOf('.');
+    final nameWithoutExtension =
+        dotIndex != -1 ? baseName.substring(0, dotIndex) : baseName;
+    final extension = dotIndex != -1 ? baseName.substring(dotIndex) : '';
+
+    var counter = 1;
+    var candidate =
+        File('$directory/${nameWithoutExtension}_$counter$extension');
+    while (await candidate.exists()) {
+      counter += 1;
+      candidate = File('$directory/${nameWithoutExtension}_$counter$extension');
+    }
+
+    return candidate;
+  }
+
+  Future<void> _showVersionsDialog() async {
+    final builds = await InProgressBuildService.getBuildsForJob(widget.job.id);
+
+    await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('$certType Certificate Details'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Company Information Section
-              const Text('Company Information', 
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: companyNameController,
-                decoration: const InputDecoration(
-                  labelText: 'Company Name',
-                  border: OutlineInputBorder(),
+        title: const Text('Versions'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 300,
+          child: builds.isEmpty
+              ? const Center(child: Text('No in-progress builds found.'))
+              : ListView.builder(
+                  itemCount: builds.length,
+                  itemBuilder: (context, index) {
+                    final build = builds[index];
+                    return ListTile(
+                      title: Text(build.name),
+                      subtitle: Text(
+                        'Updated: ${DateFormat('MMM dd, yyyy HH:mm').format(build.lastModified)}',
+                      ),
+                    );
+                  },
                 ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: companyAddressController,
-                decoration: const InputDecoration(
-                  labelText: 'Company Address',
-                  border: OutlineInputBorder(),
-                ),
-                maxLines: 2,
-              ),
-              
-              const SizedBox(height: 16),
-              
-              // Personal Information Section
-              const Text('Personal Information', 
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Full Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: licenceController,
-                decoration: const InputDecoration(
-                  labelText: 'Licence Number',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              
-              const SizedBox(height: 16),
-              
-              // Customer Information Section
-              const Text('Customer Information', 
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: customerNameController,
-                decoration: const InputDecoration(
-                  labelText: 'Customer Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: customerAddressController,
-                decoration: const InputDecoration(
-                  labelText: 'Customer Address',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.search),
-                  helperText: 'For better GPS tracking, use complete addresses with city/country',
-                ),
-                maxLines: 2,
-              ),
-              
-              const SizedBox(height: 16),
-              
-              // Certificate Details Section
-              const Text('Certificate Details', 
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: referenceController,
-                decoration: const InputDecoration(
-                  labelText: 'Reference ID',
-                  border: OutlineInputBorder(),
-                ),
-                readOnly: true,
-              ),
-              const SizedBox(height: 8),
-              
-              // Completion Date
-              TextField(
-                controller: completionDateController,
-                decoration: const InputDecoration(
-                  labelText: 'Completion Date',
-                  border: OutlineInputBorder(),
-                  suffixIcon: Icon(Icons.calendar_today),
-                ),
-                readOnly: true,
-                onTap: () async {
-                  DateTime? picked = await showDatePicker(
-                    context: context,
-                    initialDate: DateTime.now(),
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime(2100),
-                  );
-                  if (picked != null) {
-                    completionDateController.text =
-                        "${picked.day}/${picked.month}/${picked.year}";
-                  }
-                },
-              ),
-              const SizedBox(height: 8),
-              
-              // Signing Date
-              TextField(
-                controller: signingDateController,
-                decoration: const InputDecoration(
-                  labelText: 'Signing Date',
-                  border: OutlineInputBorder(),
-                  suffixIcon: Icon(Icons.calendar_today),
-                ),
-                readOnly: true,
-                onTap: () async {
-                  DateTime? picked = await showDatePicker(
-                    context: context,
-                    initialDate: DateTime.now(),
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime(2100),
-                  );
-                  if (picked != null) {
-                    signingDateController.text =
-                        "${picked.day}/${picked.month}/${picked.year}";
-                  }
-                },
-              ),
-              const SizedBox(height: 16),
-              
-              // Certificate Notes Section
-              const Text('Certificate Notes', 
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              const SizedBox(height: 8),
-              VoiceTextField(
-                controller: certificateNotesController,
-                labelText: 'Certificate Notes',
-                hintText: 'Add any additional notes for this certificate...',
-                maxLines: 4,
-                continuousListening: true, // Enable continuous listening for certificate notes
-                onChanged: () {
-                  // Auto-save functionality could go here if needed
-                },
-              ),
-            ],
-          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context, {
-                'CompanyName': companyNameController.text,
-                'CompanyAddress': companyAddressController.text,
-                'Name': nameController.text,
-                'LicenceNumber': licenceController.text,
-                'CustomerName': customerNameController.text,
-                'Address': customerAddressController.text,
-                'Reference': referenceController.text,
-                'CompletionDate': completionDateController.text,
-                'SigningDate': signingDateController.text,
-                'CertificateNotes': certificateNotesController.text,
-              });
-            },
-            child: const Text('Generate Certificate'),
+            child: const Text('Close'),
           ),
         ],
       ),
     );
-
-    if (result != null) {
-      await _generateAndSaveCertificate(certType, result);
-    }
   }
 
-  Future<void> _generateAndSaveCertificate(String certType, Map<String, String> result) async {
-    try {
-      // Get the signature file path for inclusion in PDF
-      final prefs = await SharedPreferences.getInstance();
-      final signaturePath = prefs.getString('signature_path');
-      
-      // 1. Load the PDF template from assets
-      final assetPath = getCertificateAssetPath(certType);
-      final data = await rootBundle.load(assetPath);
-      final bytes = data.buffer.asUint8List();
+  Future<void> _deleteJobFiles() async {
+    final filePaths = <String>{
+      ...(widget.job.attachments ?? []),
+      ...widget.job.estimateVersions
+          .map((version) => version.filePath)
+          .whereType<String>(),
+      ...widget.job.invoices
+          .map((invoice) => invoice.filePath)
+          .whereType<String>(),
+    };
 
-      // 2. Load the PDF document
-      final document = PdfDocument(inputBytes: bytes);
-
-      // 3. Get the field positions for this certType
-      final positions = certificateFieldPositions[certType] ?? {};
-
-      // 4. Draw each field at its position
-      final page = document.pages[0];
-      final font = PdfStandardFont(PdfFontFamily.helvetica, 12);
-
-      result.forEach((field, value) {
-        final offset = positions[field];
-        if (offset != null) {
-          page.graphics.drawString(
-            value,
-            font,
-            bounds: Rect.fromLTWH(offset.dx, offset.dy, 300, 20),
-          );
+    for (final path in filePaths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
         }
-      });
-
-      // 5. Add signature if available
-      if (signaturePath != null && await File(signaturePath).exists()) {
-        final signatureOffset = positions['Signature'];
-        if (signatureOffset != null) {
-          final signatureBytes = await File(signaturePath).readAsBytes();
-          final signatureImage = PdfBitmap(signatureBytes);
-          page.graphics.drawImage(
-            signatureImage,
-            Rect.fromLTWH(signatureOffset.dx, signatureOffset.dy, 100, 50),
-          );
-        }
-      }
-
-      // 6. Save to job attachments with proper naming
-      final output = await getApplicationDocumentsDirectory();
-      final customerName = result['CustomerName'] ?? 'Certificate';
-      final address = (result['Address'] ?? 'Unknown').replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      final jobNumber = widget.job.id;
-      
-      // Check for existing certificates with same name pattern
-      final baseName = '$customerName-$jobNumber-$address';
-      int count = 1;
-      String filePath;
-
-      do {
-        filePath = count == 1 
-            ? '${output.path}/$baseName-$certType.pdf'
-            : '${output.path}/$baseName-$certType-$count.pdf';
-        count++;
-      } while (await File(filePath).exists());
-
-      final file = File(filePath);
-      await file.writeAsBytes(await document.save());
-      document.dispose();
-
-      // 7. Add to job attachments
-      setState(() {
-        widget.job.attachments ??= [];
-        widget.job.attachments!.add(file.path);
-      });
-      
-      // 8. Save job with new attachment
-      await _saveJob();
-
-      // 9. Handle certificate notes - add to job notes if provided
-      final certificateNotes = result['CertificateNotes'];
-      if (certificateNotes != null && certificateNotes.trim().isNotEmpty) {
-        final formattedNote = '[$certType Certificate - ${result['CompletionDate'] ?? DateTime.now().toString()}] $certificateNotes';
-        setState(() {
-          widget.job.notes ??= [];
-          widget.job.notes!.add(formattedNote);
-        });
-        await _saveJob(); // Save again with the updated notes
-      }
-
-      // 10. Auto-email certificate if enabled
-      await _autoEmailCertificateIfEnabled(file.path, certType, result);
-
-      // 11. Reload job to ensure consistency and refresh attachments display
-      await _reloadJob();
-      setState(() {}); // Force UI refresh to show new attachments
-
-      // 12. Show success and open file
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Certificate saved to job attachments'),
-            action: SnackBarAction(
-              label: 'Open',
-              onPressed: () => OpenFile.open(file.path),
-            ),
-          ),
-        );
-      }
-      
-      await OpenFile.open(file.path);
-      
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error generating certificate: $e')),
-        );
+      } catch (e) {
+        debugPrint('Failed to delete job-related file $path: $e');
       }
     }
-  }
 
-  Future<void> _autoEmailCertificateIfEnabled(String filePath, String certType, Map<String, String> certificateData) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final autoEmailEnabled = prefs.getBool('auto_email_certificates') ?? false;
-      final hasAcceptedTerms = prefs.getBool('has_accepted_terms') ?? false;
-      
-      if (!autoEmailEnabled || !hasAcceptedTerms) {
-        return; // Don't send email if not enabled or terms not accepted
+      final dir = await getApplicationDocumentsDirectory();
+      final jobFile = File('${dir.path}/job_${widget.job.id}.json');
+      if (await jobFile.exists()) {
+        await jobFile.delete();
       }
 
-      final personalEmail = prefs.getString('personal_email') ?? '';
-      if (personalEmail.isEmpty) {
-        return;
+      final jobsFile = File('${dir.path}/jobs.json');
+      if (await jobsFile.exists()) {
+        final rawJobs = await jobsFile.readAsString();
+        final List<dynamic> jsonList = jsonDecode(rawJobs);
+        final remaining =
+            jsonList.where((entry) => entry['id'] != widget.job.id).toList();
+        await jobsFile.writeAsString(jsonEncode(remaining));
       }
-
-      // Prepare email content
-      final customerName = certificateData['CustomerName'] ?? 'Unknown';
-      final jobNumber = widget.job.id;
-      final companyName = prefs.getString('company_name') ?? 'Company';
-      
-      final subject = '$certType Certificate - $customerName (Job: $jobNumber)';
-      final body = '''
-Hello,
-
-A new $certType certificate has been generated and is attached to this email.
-
-Certificate Details:
-- Customer: $customerName
-- Job Number: $jobNumber
-- Certificate Type: $certType
-- Reference ID: ${certificateData['Reference'] ?? 'N/A'}
-- Completion Date: ${certificateData['CompletionDate'] ?? 'N/A'}
-- Signing Date: ${certificateData['SigningDate'] ?? 'N/A'}
-
-This email was sent automatically as part of your record keeping preferences.
-
-Best regards,
-$companyName
-''';
-
-      // Send email with certificate attachment
-      await sendEmailViaSmtp(
-        toEmail: personalEmail,
-        subject: subject,
-        body: body,
-        attachmentPaths: [filePath],
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Certificate emailed to $personalEmail'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Certificate saved but email failed: ${e.toString()}'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _showVersionsDialog() async {
-    try {
-      // Load in-progress builds for this job
-      final builds = await InProgressBuildService.getBuildsForJob(widget.job.id);
-      
-      if (builds.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No estimate versions found for this job')),
-        );
-        return;
-      }
-
-      await showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Estimate Versions'),
-          content: SizedBox(
-            width: double.maxFinite,
-            height: 400,
-            child: ListView.builder(
-              itemCount: builds.length,
-              itemBuilder: (context, index) {
-                final build = builds[index];
-                final versions = build.sortedVersions; // Use sortedVersions property
-                
-                return ExpansionTile(
-                  title: Text('Build: ${build.name}'), // Use name property
-                  subtitle: Text('${versions.length} version(s) • Current: v${build.currentVersionId}'),
-                  children: versions.map((version) {
-                    final isLatest = version.id == build.currentVersionId;
-                    return ListTile(
-                      leading: Icon(
-                        isLatest ? Icons.star : Icons.history,
-                        color: isLatest ? Colors.amber : null,
-                      ),
-                      title: Text('Version ${version.id}'),
-                      subtitle: Text(
-                        'Created: ${DateFormat('MMM dd, yyyy HH:mm').format(version.createdAt)}', // Use createdAt
-                      ),
-                      trailing: isLatest 
-                        ? const Chip(label: Text('Current'))
-                        : null,
-                      onTap: () async {
-                        Navigator.pop(context);
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => EstimateBuilderScreen(
-                              job: widget.job,
-                              initialItems: version.items,
-                            ),
-                          ),
-                        );
-                        await _reloadJob();
-                        setState(() {});
-                      },
-                    );
-                  }).toList(),
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error loading versions: $e')),
-      );
+      debugPrint(
+          'Failed to delete job metadata files for ${widget.job.id}: $e');
     }
   }
 
@@ -1110,60 +1497,456 @@ $companyName
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Job'),
-        content: Text('Are you sure you want to delete "${widget.job.title}"?\n\nThis will also delete all estimate versions and cannot be undone.'),
+        content: const Text('Are you sure you want to delete this job?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
+          TextButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
             child: const Text('Delete'),
           ),
         ],
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed != true) return;
+
+    try {
+      await _deleteJobFiles();
+      await FirestoreService.deleteJob(widget.job.id);
+    } catch (_) {
+      // If cloud deletion fails or is not available, continue with local deletion.
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Job deleted successfully')),
+      );
+    }
+
+    if (mounted) {
+      Navigator.pop(context, true);
+    }
+  }
+
+  Future<void> _openAddressInMaps(String? address) async {
+    if (address == null || address.trim().isEmpty) {
+      debugPrint('Open maps called with empty address');
+      return;
+    }
+
+    final trimmedAddress = address.trim();
+    final containsCountry =
+        RegExp(r'\b(new zealand|nz)\b', caseSensitive: false)
+            .hasMatch(trimmedAddress);
+    final searchAddress =
+        containsCountry ? trimmedAddress : '$trimmedAddress, New Zealand';
+    final encodedAddress = Uri.encodeComponent(searchAddress);
+    final googleMapsUri = Uri.parse(
+        'https://www.google.com/maps/search/?api=1&query=$encodedAddress');
+    final geoUri = Uri.parse('geo:0,0?q=$encodedAddress');
+
+    debugPrint('Maps debug: address="$address" searchAddress="$searchAddress"');
+    debugPrint('Maps debug: googleMapsUri=$googleMapsUri');
+    debugPrint('Maps debug: geoUri=$geoUri');
+
+    bool launched = false;
+    String failureDetails = '';
+
+    Future<bool> _attemptLaunch(Uri uri, String label) async {
       try {
-        // Delete all in-progress builds for this job
-        await InProgressBuildService.deleteAllBuildsForJob(widget.job.id);
-        
-        // TODO: Delete the job itself from your job storage
-        // This depends on how jobs are stored in your app
-        
+        final canLaunch = await canLaunchUrl(uri);
+        debugPrint('Maps debug: canLaunchUrl($label)=$canLaunch');
+        if (canLaunch) {
+          launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          debugPrint(
+              'Maps debug: launchUrl($label, externalApplication) returned $launched');
+          if (launched) {
+            return true;
+          }
+        }
+
+        debugPrint(
+            'Maps debug: attempting direct launch for $label even though canLaunchUrl=$canLaunch');
+        launched = await launchUrl(uri);
+        debugPrint('Maps debug: direct launchUrl($label) returned $launched');
+        return launched;
+      } catch (e, stackTrace) {
+        debugPrint('Maps debug: Failed to launch $label: $e');
+        debugPrint(stackTrace.toString());
+        failureDetails += '$label launch error: $e\n';
+        return false;
+      }
+    }
+
+    launched = await _attemptLaunch(googleMapsUri, 'googleMapsUri');
+    if (!launched) {
+      debugPrint('Maps debug: failing over to geoUri');
+      launched = await _attemptLaunch(geoUri, 'geoUri');
+    }
+
+    if (!launched) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Job and all versions deleted successfully'),
-            backgroundColor: Colors.green,
+          SnackBar(
+            content: const Text(
+              'Could not open maps. Please check the address and your device settings.',
+            ),
+            duration: const Duration(seconds: 5),
           ),
         );
-        
-        // Go back to previous screen
-        Navigator.pop(context);
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error deleting job: $e')),
-        );
       }
+      debugPrint('Maps debug: failed to open maps. Details:\n$failureDetails');
+    }
+  }
+
+  Future<void> _processInvoiceAction(dynamic invoice, String action) async {
+    switch (action) {
+      case 'pdf':
+        if (invoice.filePath != null) {
+          await OpenFile.open(invoice.filePath);
+        }
+        break;
+      case 'builder':
+        if (invoice.items != null) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => EstimateBuilderScreen(
+                job: widget.job,
+                initialItems: invoice.items,
+                initialSubsections: invoice.subsections,
+                initialDepositAmount: invoice.depositAmount,
+                initialDepositPercentage: invoice.depositPercentage,
+                initialIsDepositPercentage: invoice.isDepositPercentage,
+                initialBuildType: 'invoice',
+              ),
+            ),
+          );
+          await _reloadJob();
+        }
+        break;
+      case 'paid':
+        invoice.isPaid = true;
+        await _saveJob();
+        break;
+      case 'void':
+      case 'archive':
+        invoice.isArchived = true;
+        await _saveJob();
+        break;
+      case 'due':
+        final newDate = await showDatePicker(
+          context: context,
+          initialDate: invoice.dueDate ?? DateTime.now(),
+          firstDate: DateTime(2000),
+          lastDate: DateTime(2100),
+        );
+        if (newDate != null) {
+          invoice.dueDate = newDate;
+          await _saveJob();
+        }
+        break;
+    }
+  }
+
+  Future<void> _processEstimateAction(dynamic estimate, String action) async {
+    switch (action) {
+      case 'pdf':
+        if (estimate.filePath != null) {
+          await OpenFile.open(estimate.filePath);
+        }
+        break;
+      case 'builder':
+        if (estimate.items != null) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => EstimateBuilderScreen(
+                job: widget.job,
+                initialItems: estimate.items,
+                initialSubsections: estimate.sections,
+                initialDepositAmount: estimate.depositAmount,
+                initialDepositPercentage: estimate.depositPercentage,
+                initialIsDepositPercentage: estimate.isDepositPercentage,
+                initialBuildType: estimate.type,
+              ),
+            ),
+          );
+          await _reloadJob();
+        }
+        break;
+      case 'void':
+        estimate.isArchived = true;
+        await _saveJob();
+        break;
+      case 'convert':
+        if (estimate.items != null) {
+          estimate.isConverted = true;
+          await _saveJob();
+          print('🔧 JobDetailsScreen convert action: estimate.id=${estimate.id} invoiceNumber=${estimate.invoiceNumber} type=${estimate.type}');
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => EstimateBuilderScreen(
+                job: widget.job,
+                initialItems: estimate.items,
+                initialSubsections: estimate.sections,
+                convertToInvoice: true,
+                initialSourceType: estimate.type,
+                initialSourceTimestamp: estimate.timestamp,
+                initialDepositAmount: estimate.depositAmount,
+                initialDepositPercentage: estimate.depositPercentage,
+                initialIsDepositPercentage: estimate.isDepositPercentage,
+              ),
+            ),
+          );
+          await _reloadJob();
+        }
+        break;
+    }
+  }
+
+  Future<void> _showCertificateTypePicker() async {
+    final selectedType = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        String choice = 'COC';
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Select Certificate Type'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                RadioListTile<String>(
+                  title: const Text('COC'),
+                  value: 'COC',
+                  groupValue: choice,
+                  onChanged: (value) {
+                    setState(() => choice = value ?? 'COC');
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('ESC'),
+                  value: 'ESC',
+                  groupValue: choice,
+                  onChanged: (value) {
+                    setState(() => choice = value ?? 'ESC');
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, choice),
+                child: const Text('Continue'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (selectedType == null) return;
+
+    if (selectedType == 'COC') {
+      final didGenerate = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => coc_form.CocFormScreen(job: widget.job),
+        ),
+      );
+      if (didGenerate == true) {
+        await _reloadJob();
+        if (mounted) setState(() {});
+      }
+    } else if (selectedType == 'ESC') {
+      final didGenerate = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => esc_form.EscFormScreen(job: widget.job),
+        ),
+      );
+      if (didGenerate == true) {
+        await _reloadJob();
+        if (mounted) setState(() {});
+      }
+    }
+  }
+
+  Future<void> _showLoadingDialog(String message) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        _loadingDialogContext = dialogContext;
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: AlertDialog(
+            content: Row(
+              children: [
+                const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 16),
+                Expanded(child: Text(message)),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    _loadingDialogContext = null;
+  }
+
+  void _closeLoadingDialog() {
+    try {
+      if (_loadingDialogContext != null &&
+          Navigator.of(_loadingDialogContext!).canPop()) {
+        Navigator.of(_loadingDialogContext!).pop();
+      } else if (Navigator.of(context, rootNavigator: true).canPop()) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    } catch (_) {
+      // Ignore pop failure.
+    } finally {
+      _loadingDialogContext = null;
+    }
+  }
+
+  Future<void> _showCustomerEditorDialog() async {
+    final job = widget.job;
+    final nameController = TextEditingController(text: job.customerName ?? '');
+    final companyController =
+        TextEditingController(text: job.companyName ?? '');
+    final addressController = TextEditingController(text: job.address ?? '');
+    final emailController =
+        TextEditingController(text: job.customerEmail ?? '');
+    final bodyCorporateController =
+        TextEditingController(text: job.bodyCorporateNumber ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Customer Details'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                textCapitalization: TextCapitalization.sentences,
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Customer Name'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                textCapitalization: TextCapitalization.sentences,
+                controller: companyController,
+                decoration: const InputDecoration(labelText: 'Company Name'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                textCapitalization: TextCapitalization.characters,
+                controller: bodyCorporateController,
+                decoration:
+                    const InputDecoration(labelText: 'Body Corporate Number'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                textCapitalization: TextCapitalization.sentences,
+                controller: addressController,
+                decoration: const InputDecoration(labelText: 'Address'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                textCapitalization: TextCapitalization.sentences,
+                controller: emailController,
+                decoration: const InputDecoration(labelText: 'Email'),
+                keyboardType: TextInputType.emailAddress,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context, true);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved == true) {
+      setState(() {
+        widget.job.customerName = nameController.text.trim().isEmpty
+            ? null
+            : nameController.text.trim();
+        widget.job.companyName = companyController.text.trim().isEmpty
+            ? null
+            : companyController.text.trim();
+        widget.job.bodyCorporateNumber =
+            bodyCorporateController.text.trim().isEmpty
+                ? null
+                : bodyCorporateController.text.trim();
+        widget.job.address = addressController.text.trim().isEmpty
+            ? null
+            : addressController.text.trim();
+        widget.job.customerEmail = emailController.text.trim().isEmpty
+            ? null
+            : emailController.text.trim();
+      });
+      await _saveJob();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final job = widget.job;
-    final invoices = job.invoiceVersions; // Use invoiceVersions instead of invoices
+    final invoices =
+        job.invoiceVersions; // Use invoiceVersions instead of invoices
     final estimates = job.estimates;
-    final attachments = job.attachments ?? [];
+    final attachments = _getAttachmentFilePaths();
 
     return Scaffold(
       appBar: AppBar(
         title: Text(job.title),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.add_task),
+            tooltip: 'Add to To-Do List',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ToDoListScreen(
+                    prefilledTitle: 'Follow up: ${job.title}',
+                    linkedJobId: job.id,
+                    linkedJobTitle: job.title,
+                  ),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.schedule),
+            tooltip: 'Open schedule',
+            onPressed: () => Navigator.pushNamed(context, '/scheduling'),
+          ),
           PopupMenuButton<String>(
             onSelected: (value) async {
               switch (value) {
@@ -1209,6 +1992,7 @@ $companyName
                     Expanded(
                       child: _editing
                           ? TextField(
+                              textCapitalization: TextCapitalization.sentences,
                               controller: _titleController,
                               decoration: const InputDecoration(
                                 labelText: 'Job Name',
@@ -1240,6 +2024,7 @@ $companyName
                 ),
                 if (_editing)
                   TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: _descController,
                     decoration: const InputDecoration(
                       labelText: 'Job Description (optional)',
@@ -1287,25 +2072,36 @@ $companyName
               margin: const EdgeInsets.only(bottom: 20),
               child: ListTile(
                 leading: const Icon(Icons.person),
-                title: Text('Customer: ${job.customerName}'),
-                subtitle: job.address != null && job.address!.isNotEmpty
-                    ? Row(
+                title: Text(
+                    'Customer: ${job.customerName?.isNotEmpty == true ? job.customerName : (job.companyName?.isNotEmpty == true ? job.companyName : 'No customer')}'),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (job.companyName != null &&
+                        job.companyName!.isNotEmpty &&
+                        job.customerName?.isNotEmpty == true)
+                      Text('Company: ${job.companyName}'),
+                    if (job.bodyCorporateNumber != null &&
+                        job.bodyCorporateNumber!.isNotEmpty)
+                      Text('Body Corporate No: ${job.bodyCorporateNumber}'),
+                    if (job.address != null && job.address!.isNotEmpty)
+                      Row(
                         children: [
                           Expanded(child: Text('Address: ${job.address}')),
                           IconButton(
                             icon: const Icon(Icons.map),
                             tooltip: 'Open in Maps',
-                            onPressed: () async {
-                              final encoded = Uri.encodeComponent(job.address!);
-                              final url = 'https://www.google.com/maps/search/?api=1&query=$encoded';
-                              if (await canLaunchUrl(Uri.parse(url))) {
-                                await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-                              }
-                            },
+                            onPressed: () => _openAddressInMaps(job.address),
                           ),
                         ],
-                      )
-                    : null,
+                      ),
+                  ],
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.edit),
+                  tooltip: 'Edit Customer',
+                  onPressed: _showCustomerEditorDialog,
+                ),
               ),
             ),
 
@@ -1317,13 +2113,21 @@ $companyName
                 backgroundColor: Colors.indigo,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 48),
-                textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                textStyle:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 elevation: 2,
               ),
               onPressed: () async {
+                // Ask up-front what type of document this build is for.
+                final selectedBuildType =
+                    await _showSelectBuildTypeDialog(context);
+                if (selectedBuildType == null) return;
+
                 // Show template picker dialog
-                final selectedTemplate = await showTemplatePickerDialog(context, _templates);
+                final selectedTemplate =
+                    await showTemplatePickerDialog(context, _templates);
                 if (selectedTemplate != null) {
                   // Navigate to builder with selected template
                   await Navigator.push(
@@ -1332,6 +2136,7 @@ $companyName
                       builder: (_) => EstimateBuilderScreen(
                         job: widget.job,
                         initialTemplate: selectedTemplate,
+                        initialBuildType: selectedBuildType,
                       ),
                     ),
                   );
@@ -1346,7 +2151,8 @@ $companyName
             // --- In Progress Builds SECTION (styled like Invoices/Estimates) ---
             Row(
               children: [
-                Text('In Progress Builds', style: Theme.of(context).textTheme.titleLarge),
+                Text('In Progress Builds',
+                    style: Theme.of(context).textTheme.titleLarge),
                 const Spacer(),
                 IconButton(
                   icon: const Icon(Icons.refresh),
@@ -1357,8 +2163,10 @@ $companyName
                   icon: const Icon(Icons.info_outline),
                   tooltip: 'Debug builds',
                   onPressed: () async {
-                    final builds = await InProgressBuildService.getBuildsForJob(widget.job.id);
-                    final allBuilds = await InProgressBuildService.loadAllBuilds();
+                    final builds = await InProgressBuildService.getBuildsForJob(
+                        widget.job.id);
+                    final allBuilds =
+                        await InProgressBuildService.loadAllBuilds();
                     showDialog(
                       context: context,
                       builder: (context) => AlertDialog(
@@ -1393,7 +2201,7 @@ $companyName
                     child: Center(child: CircularProgressIndicator()),
                   );
                 }
-                
+
                 if (snapshot.hasError) {
                   return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8),
@@ -1403,181 +2211,289 @@ $companyName
                     ),
                   );
                 }
-                
+
                 final builds = snapshot.data ?? [];
-                
+
                 if (builds.isEmpty) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
                     child: Text(
                       'No in-progress builds.',
                       style: TextStyle(color: Colors.grey),
                     ),
                   );
                 }
-                
+
                 return Column(
-                  children: builds.map((build) => Card(
-                    margin: const EdgeInsets.symmetric(vertical: 6),
-                    child: ListTile(
-                      title: Text('In-Progress Build ${builds.indexOf(build) + 1}'),
-                      subtitle: Text(
-                        'Last modified: ${DateFormat('MMM dd, yyyy HH:mm').format(build.lastModified)}',
-                      ),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (action) async {
-                          if (action == 'edit') {
-                            // Navigate to resume editing this in-progress build
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => EstimateBuilderScreen(
-                                  job: widget.job,
-                                  initialItems: build.currentVersion.items,
-                                ),
+                  children: builds
+                      .map((build) => Card(
+                            margin: const EdgeInsets.symmetric(vertical: 6),
+                            child: ListTile(
+                              leading: Icon(_buildTypeIcon(_buildTypeOf(build))),
+                              title: Text(build.name),
+                              subtitle: Text(
+                                '${_buildTypeLabel(_buildTypeOf(build))} • Last modified: ${DateFormat('MMM dd, yyyy HH:mm').format(build.lastModified)}',
                               ),
-                            );
-                            // Refresh job details and in-progress builds display
-                            await _reloadJob();
-                            setState(() {});
-                          } else if (action == 'versions') {
-                            // Show versions dialog
-                            await showDialog(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                title: Text('Build Versions'),
-                                content: SizedBox(
-                                  width: double.maxFinite,
-                                  height: 300,
-                                  child: ListView.builder(
-                                    itemCount: build.versions.length,
-                                    itemBuilder: (context, index) {
-                                      final version = build.versions[index];
-                                      final isLatest = version.id == build.currentVersionId;
-                                      return ListTile(
-                                        leading: Icon(
-                                          isLatest ? Icons.star : Icons.history,
-                                          color: isLatest ? Colors.amber : null,
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (action) async {
+                                  if (action == 'edit') {
+                                    await Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => EstimateBuilderScreen(
+                                          job: widget.job,
+                                          inProgressBuildId: build.id,
+                                          initialItems:
+                                              build.currentVersion.items,
+                                          initialSubsections:
+                                              build.currentVersion.subsections,
+                                          initialDepositAmount: build
+                                                      .currentVersion
+                                                      .additionalData?[
+                                                  'depositAmount'] is num
+                                              ? (build.currentVersion
+                                                          .additionalData![
+                                                      'depositAmount'] as num)
+                                                  .toDouble()
+                                              : null,
+                                          initialDepositPercentage: build
+                                                      .currentVersion
+                                                      .additionalData?[
+                                                  'depositPercentage'] is num
+                                              ? (build.currentVersion
+                                                              .additionalData![
+                                                          'depositPercentage']
+                                                      as num)
+                                                  .toDouble()
+                                              : null,
+                                          initialIsDepositPercentage: build
+                                                      .currentVersion
+                                                      .additionalData?[
+                                                  'isDepositPercentage'] ==
+                                              true,
+                                          initialBuildType:
+                                              _buildTypeOf(build),
                                         ),
-                                        title: Text('Version ${version.id}'),
-                                        subtitle: Text(
-                                          'Created: ${DateFormat('MMM dd, yyyy HH:mm').format(version.createdAt)}',
+                                      ),
+                                    );
+                                    await _reloadJob();
+                                    setState(() {});
+                                  } else if (action == 'versions') {
+                                    await showDialog(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('Build Versions'),
+                                        content: SizedBox(
+                                          width: double.maxFinite,
+                                          height: 300,
+                                          child: ListView.builder(
+                                            itemCount: build.versions.length,
+                                            itemBuilder: (context, index) {
+                                              final version =
+                                                  build.versions[index];
+                                              final isLatest = version.id ==
+                                                  build.currentVersionId;
+                                              return ListTile(
+                                                leading: Icon(
+                                                  isLatest
+                                                      ? Icons.star
+                                                      : Icons.history,
+                                                  color: isLatest
+                                                      ? Colors.amber
+                                                      : null,
+                                                ),
+                                                title: Text(
+                                                    'Version ${version.id}'),
+                                                subtitle: Text(
+                                                  'Created: ${DateFormat('MMM dd, yyyy HH:mm').format(version.createdAt)}',
+                                                ),
+                                                trailing: isLatest
+                                                    ? const Chip(
+                                                        label: Text('Current'))
+                                                    : null,
+                                                onTap: () async {
+                                                  Navigator.pop(context);
+                                                  await Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (context) =>
+                                                          EstimateBuilderScreen(
+                                                        job: widget.job,
+                                                        inProgressBuildId:
+                                                            build.id,
+                                                        initialItems:
+                                                            version.items,
+                                                        initialSubsections:
+                                                            version.subsections,
+                                                        initialDepositAmount: version
+                                                                        .additionalData?[
+                                                                    'depositAmount']
+                                                                is num
+                                                            ? (version.additionalData![
+                                                                        'depositAmount']
+                                                                    as num)
+                                                                .toDouble()
+                                                            : null,
+                                                        initialDepositPercentage:
+                                                            version.additionalData?[
+                                                                        'depositPercentage']
+                                                                    is num
+                                                                ? (version.additionalData![
+                                                                            'depositPercentage']
+                                                                        as num)
+                                                                    .toDouble()
+                                                                : null,
+                                                        initialIsDepositPercentage:
+                                                            version.additionalData?[
+                                                                    'isDepositPercentage'] ==
+                                                                true,
+                                                        initialBuildType: version
+                                                                        .additionalData?[
+                                                                    'buildType']
+                                                                is String
+                                                            ? version.additionalData![
+                                                                'buildType'] as String
+                                                            : _buildTypeOf(build),
+                                                      ),
+                                                    ),
+                                                  );
+                                                  await _reloadJob();
+                                                  setState(() {});
+                                                },
+                                              );
+                                            },
+                                          ),
                                         ),
-                                        trailing: isLatest 
-                                          ? const Chip(label: Text('Current'))
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context),
+                                            child: const Text('Close'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  } else if (action == 'delete') {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text(
+                                            'Delete in-progress build?'),
+                                        content: const Text(
+                                            'Are you sure you want to delete this in-progress build?'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            style: TextButton.styleFrom(
+                                                foregroundColor: Colors.red),
+                                            child: const Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      try {
+                                        await InProgressBuildService
+                                            .deleteBuild(build.id);
+                                        await _reloadJob();
+                                        setState(() {});
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                              content: Text(
+                                                  'Build deleted successfully')),
+                                        );
+                                      } catch (e) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          SnackBar(
+                                              content: Text(
+                                                  'Failed to delete build: $e')),
+                                        );
+                                      }
+                                    }
+                                  }
+                                },
+                                itemBuilder: (context) => [
+                                  const PopupMenuItem(
+                                    value: 'edit',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.edit),
+                                        SizedBox(width: 8),
+                                        Text('Edit'),
+                                      ],
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'versions',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.history),
+                                        SizedBox(width: 8),
+                                        Text('Versions'),
+                                      ],
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.delete, color: Colors.red),
+                                        SizedBox(width: 8),
+                                        Text('Delete'),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              onTap: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => EstimateBuilderScreen(
+                                      job: widget.job,
+                                      inProgressBuildId: build.id,
+                                      initialItems: build.currentVersion.items,
+                                      initialSubsections:
+                                          build.currentVersion.subsections,
+                                      initialDepositAmount:
+                                          build.currentVersion.additionalData?[
+                                                  'depositAmount'] is num
+                                              ? (build.currentVersion
+                                                          .additionalData![
+                                                      'depositAmount'] as num)
+                                                  .toDouble()
+                                              : null,
+                                      initialDepositPercentage: build
+                                                  .currentVersion
+                                                  .additionalData?[
+                                              'depositPercentage'] is num
+                                          ? (build.currentVersion
+                                                      .additionalData![
+                                                  'depositPercentage'] as num)
+                                              .toDouble()
                                           : null,
-                                        onTap: () async {
-                                          Navigator.pop(context);
-                                          await Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (context) => EstimateBuilderScreen(
-                                                job: widget.job,
-                                                initialItems: version.items,
-                                              ),
-                                            ),
-                                          );
-                                          await _reloadJob();
-                                          setState(() {});
-                                        },
-                                      );
-                                    },
+                                      initialIsDepositPercentage:
+                                          build.currentVersion.additionalData?[
+                                                  'isDepositPercentage'] ==
+                                              true,
+                                      initialBuildType: _buildTypeOf(build),
+                                    ),
                                   ),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context),
-                                    child: const Text('Close'),
-                                  ),
-                                ],
-                              ),
-                            );
-                          } else if (action == 'delete') {
-                            // Confirm deletion
-                            final confirm = await showDialog<bool>(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                title: const Text('Delete Build'),
-                                content: const Text('Are you sure you want to delete this in-progress build? This cannot be undone.'),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, false),
-                                    child: const Text('Cancel'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, true),
-                                    style: TextButton.styleFrom(foregroundColor: Colors.red),
-                                    child: const Text('Delete'),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (confirm == true) {
-                              try {
-                                await InProgressBuildService.deleteBuild(build.id);
+                                );
                                 await _reloadJob();
                                 setState(() {});
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('Build deleted successfully')),
-                                );
-                              } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Failed to delete build: $e')),
-                                );
-                              }
-                            }
-                          }
-                        },
-                        itemBuilder: (context) => [
-                          const PopupMenuItem(
-                            value: 'edit',
-                            child: Row(
-                              children: [
-                                Icon(Icons.edit),
-                                SizedBox(width: 8),
-                                Text('Edit'),
-                              ],
+                              },
                             ),
-                          ),
-                          const PopupMenuItem(
-                            value: 'versions',
-                            child: Row(
-                              children: [
-                                Icon(Icons.history),
-                                SizedBox(width: 8),
-                                Text('Versions'),
-                              ],
-                            ),
-                          ),
-                          const PopupMenuItem(
-                            value: 'delete',
-                            child: Row(
-                              children: [
-                                Icon(Icons.delete, color: Colors.red),
-                                SizedBox(width: 8),
-                                Text('Delete'),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      onTap: () async {
-                        // Navigate to resume editing this in-progress build
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => EstimateBuilderScreen(
-                              job: widget.job,
-                              initialItems: build.currentVersion.items,
-                            ),
-                          ),
-                        );
-                        // Refresh job details and in-progress builds display
-                        await _reloadJob();
-                        setState(() {});
-                      },
-                    ),
-                  )).toList(),
+                          ))
+                      .toList(),
                 );
               },
             ),
@@ -1586,180 +2502,192 @@ $companyName
             // 3. INVOICES SECTION
             Text('Invoices', style: Theme.of(context).textTheme.titleLarge),
             ...invoices.map((invoice) => Card(
-              margin: const EdgeInsets.symmetric(vertical: 6),
-              child: ListTile(
-                title: Text(invoice.invoiceNumber ?? invoice.id ?? "Invoice"),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Due: ${formatDate(invoice.dueDate)}'),
-                    Text('Amount: \$${invoice.amount.toStringAsFixed(2)}'),
-                    Text('Status: ${invoice.isPaid ? "Paid" : invoice.isArchived ? "Archived" : "Unpaid"}'),
-                  ],
-                ),
-                trailing: PopupMenuButton<String>(
-                  onSelected: (action) async {
-                    if (action == 'pdf' && invoice.filePath != null) {
-                      OpenFile.open(invoice.filePath!);
-                    } else if (action == 'builder') {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => EstimateBuilderScreen(
-                            job: widget.job,
-                            initialItems: invoice.items,
-                            initialSubsections: invoice.sections,
-                          ),
-                        ),
-                      );
-                      await _reloadJob();
-                      setState(() {});
-                    } else if (action == 'paid') {
-                      setState(() => invoice.isPaid = true);
-                      _markDirtyAndAutoSave();
-                    } else if (action == 'void') {
-                      setState(() => invoice.isArchived = true);
-                      _markDirtyAndAutoSave();
-                    } else if (action == 'archive') {
-                      setState(() => invoice.isArchived = true);
-                      _markDirtyAndAutoSave();
-                    } else if (action == 'due') {
-                      DateTime? picked = await showDatePicker(
-                        context: context,
-                        initialDate: invoice.dueDate ?? DateTime.now(),
-                        firstDate: DateTime.now().subtract(const Duration(days: 365)),
-                        lastDate: DateTime.now().add(const Duration(days: 365 * 2)),
-                      );
-                      setState(() => invoice.dueDate = picked);
-                      _markDirtyAndAutoSave();
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    if (invoice.filePath != null)
-                      const PopupMenuItem(value: 'pdf', child: Text('Open PDF')),
-                    const PopupMenuItem(value: 'builder', child: Text('Open in Builder')),
-                    if (!invoice.isPaid)
-                      const PopupMenuItem(value: 'paid', child: Text('Mark as Paid')),
-                    if (!invoice.isArchived)
-                      const PopupMenuItem(value: 'void', child: Text('Void Invoice')),
-                    if (!invoice.isArchived)
-                      const PopupMenuItem(value: 'archive', child: Text('Archive Invoice')),
-                    const PopupMenuItem(value: 'due', child: Text('Change Due Date')),
-                  ],
-                ),
-              ),
-            )),
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: ListTile(
+                    title:
+                        Text(invoice.invoiceNumber ?? invoice.id ?? "Invoice"),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Due: ${formatDate(invoice.dueDate)}'),
+                        Text('Amount: \$${invoice.amount.toStringAsFixed(2)}'),
+                        Text(
+                            'Status: ${invoice.isPaid ? "Paid" : invoice.isArchived ? "Archived" : "Unpaid"}'),
+                      ],
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (action) async {
+                        await _processInvoiceAction(invoice, action);
+                      },
+                      itemBuilder: (context) => [
+                        if (invoice.filePath != null)
+                          const PopupMenuItem(
+                              value: 'pdf', child: Text('Open PDF')),
+                        const PopupMenuItem(
+                            value: 'builder', child: Text('Open in Builder')),
+                        if (!invoice.isPaid)
+                          const PopupMenuItem(
+                              value: 'paid', child: Text('Mark as Paid')),
+                        if (!invoice.isArchived)
+                          const PopupMenuItem(
+                              value: 'void', child: Text('Void Invoice')),
+                        if (!invoice.isArchived)
+                          const PopupMenuItem(
+                              value: 'archive', child: Text('Archive Invoice')),
+                        const PopupMenuItem(
+                            value: 'due', child: Text('Change Due Date')),
+                      ],
+                    ),
+                  ),
+                )),
             const Divider(height: 32),
 
             // 4. QUOTES/ESTIMATES SECTION
-            Text('Quotes / Estimates', style: Theme.of(context).textTheme.titleLarge),
+            Text('Quotes / Estimates',
+                style: Theme.of(context).textTheme.titleLarge),
             ...estimates.map((estimate) => Card(
-              margin: const EdgeInsets.symmetric(vertical: 6),
-              child: ListTile(
-                title: Text('${estimate.documentNumber ?? estimate.type}'),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (!estimate.isConverted)
-                      Text(
-                        'Expires: ${formatDate(estimate.expiryDate)}',
-                        style: TextStyle(
-                          color: (estimate.expiryDate != null && estimate.expiryDate!.isBefore(DateTime.now()))
-                              ? Colors.red
-                              : null,
-                        ),
-                      ),
-                    if (estimate.isConverted)
-                      const Text('Converted to Invoice', style: TextStyle(color: Colors.green)),
-                  ],
-                ),
-                trailing: PopupMenuButton<String>(
-                  onSelected: (action) async {
-                    if (action == 'pdf' && estimate.filePath != null) {
-                      OpenFile.open(estimate.filePath!);
-                    } else if (action == 'builder') {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => EstimateBuilderScreen(
-                            job: widget.job,
-                            initialItems: estimate.items,
-                            initialSubsections: estimate.sections,
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: ListTile(
+                    title: Text('${estimate.documentNumber ?? estimate.type}'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!estimate.isConverted)
+                          Text(
+                            'Expires: ${formatDate(estimate.expiryDate)}',
+                            style: TextStyle(
+                              color: (estimate.expiryDate != null &&
+                                      estimate.expiryDate!
+                                          .isBefore(DateTime.now()))
+                                  ? Colors.red
+                                  : null,
+                            ),
                           ),
-                        ),
-                      );
-                      await _reloadJob();
-                      setState(() {});
-                    } else if (action == 'convert') {
-                      setState(() => estimate.isConverted = true);
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => EstimateBuilderScreen(
-                            job: widget.job,
-                            initialItems: estimate.items,
-                            initialSubsections: estimate.sections,
-                            convertToInvoice: true,
+                        if (estimate.isConverted)
+                          const Text('Converted to Invoice',
+                              style: TextStyle(color: Colors.green)),
+                        if (estimate.isArchived)
+                          const Text('Voided',
+                              style: TextStyle(color: Colors.red)),
+                      ],
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (action) async {
+                        await _processEstimateAction(estimate, action);
+                      },
+                      itemBuilder: (context) => [
+                        if (estimate.filePath != null)
+                          const PopupMenuItem(
+                              value: 'pdf', child: Text('Open PDF')),
+                        const PopupMenuItem(
+                            value: 'builder', child: Text('Open in Builder')),
+                        if (!estimate.isConverted)
+                          const PopupMenuItem(
+                              value: 'convert',
+                              child: Text('Convert to Invoice')),
+                        if (!estimate.isArchived)
+                          PopupMenuItem(
+                            value: 'void',
+                            child: Text(
+                                'Void ${estimate.type != null ? '${estimate.type![0].toUpperCase()}${estimate.type!.substring(1)}' : 'Document'}'),
                           ),
-                        ),
-                      );
-                      await _reloadJob();
-                      setState(() {});
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    if (estimate.filePath != null)
-                      const PopupMenuItem(value: 'pdf', child: Text('Open PDF')),
-                    const PopupMenuItem(value: 'builder', child: Text('Open in Builder')),
-                    if (!estimate.isConverted)
-                      const PopupMenuItem(value: 'convert', child: Text('Convert to Invoice')),
-                  ],
-                ),
-              ),
-            )),
+                      ],
+                    ),
+                  ),
+                )),
             const Divider(height: 32),
 
             // 5. JOB NOTES SECTION
             Text('Job Notes', style: Theme.of(context).textTheme.titleLarge),
-            ...notes.asMap().entries.map((entry) {
-  final idx = entry.key;
-  final note = entry.value;
-  return InkWell(
-    onTap: () async {
-      final shouldDelete = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Delete Note?'),
-          content: Text(note),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete', style: TextStyle(color: Colors.red)),
-            ),
-          ],
-        ),
-      );
-      if (shouldDelete == true) {
-        setState(() {
-          notes.removeAt(idx);
-        });
-        await _saveJob();
-      }
-    },
-    child: ListTile(
-      leading: const Icon(Icons.note),
-      title: Text(note),
-    ),
-  );
-}),
+            Builder(builder: (context) {
+              final builderNoteIndex = notes.indexWhere(_isBuilderNote);
+              final builderNote = builderNoteIndex != -1
+                  ? _displayNoteText(notes[builderNoteIndex])
+                  : null;
+              final regularNotes =
+                  notes.where((note) => !_isBuilderNote(note)).toList();
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (builderNote != null) ...[
+                    ListTile(
+                      leading: const Icon(Icons.sticky_note_2),
+                      title: const Text('General Job Notes'),
+                      subtitle: Text(builderNote),
+                      onTap: () async {
+                        final shouldDelete = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Delete General Job Note?'),
+                            content: Text(builderNote),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('Delete',
+                                    style: TextStyle(color: Colors.red)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (shouldDelete == true) {
+                          setState(() {
+                            notes.removeAt(builderNoteIndex);
+                          });
+                          await _saveJob();
+                        }
+                      },
+                    ),
+                    const Divider(),
+                  ],
+                  ...regularNotes.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final note = entry.value;
+                    return InkWell(
+                      onTap: () async {
+                        final shouldDelete = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Delete Note?'),
+                            content: Text(note),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('Delete',
+                                    style: TextStyle(color: Colors.red)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (shouldDelete == true) {
+                          setState(() {
+                            notes.removeAt(idx);
+                          });
+                          await _saveJob();
+                        }
+                      },
+                      child: ListTile(
+                        leading: const Icon(Icons.note),
+                        title: Text(note),
+                      ),
+                    );
+                  }),
+                ],
+              );
+            }),
             Row(
               children: [
                 Expanded(
                   child: TextField(
+                    textCapitalization: TextCapitalization.sentences,
                     controller: noteController,
                     decoration: const InputDecoration(
                       hintText: 'Add a note...',
@@ -1784,11 +2712,26 @@ $companyName
 
             // 6. ATTACHMENTS SECTION
             Text('Attachments', style: Theme.of(context).textTheme.titleLarge),
-            ...attachments.map((file) => ListTile(
-              leading: const Icon(Icons.attach_file),
-              title: Text(file.split('/').last),
-              onTap: () => OpenFile.open(file),
-            )),
+            ...attachments.asMap().entries.map((entry) {
+              final index = entry.key;
+              final file = entry.value;
+              return ListTile(
+                leading: _buildAttachmentLeadingThumbnail(file),
+                title: Text(file.split('/').last),
+                onTap: () {
+                  // Open in-house attachment viewer
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AttachmentViewerScreen(
+                        attachmentPaths: attachments,
+                        initialIndex: index,
+                      ),
+                    ),
+                  );
+                },
+              );
+            }),
             TextButton.icon(
               icon: const Icon(Icons.upload_file),
               label: const Text('Add Attachment'),
@@ -1806,6 +2749,29 @@ $companyName
                 }
               },
             ),
+            const SizedBox(height: 20),
+            Text('Photos', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Take Photo'),
+                    onPressed: _capturePhoto,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Upload Photo'),
+                    onPressed: _pickPhotoFromGallery,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
             const SizedBox(height: 32),
 
             // 7. CREATE CERTIFICATE SECTION
@@ -1816,15 +2782,15 @@ $companyName
                 backgroundColor: Colors.indigo,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 48),
-                textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                textStyle:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 elevation: 2,
               ),
               onPressed: _showCertificateTypePicker,
             ),
-
-            // --- Add more space between certificate and email button ---
-            const SizedBox(height: 40), // Increase this value for more space
+            const SizedBox(height: 24),
 
             // 8. EMAIL CUSTOMER BUTTON AT BOTTOM
             ElevatedButton.icon(
@@ -1834,8 +2800,10 @@ $companyName
                 backgroundColor: Colors.indigo,
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 48),
-                textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                textStyle:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 elevation: 2,
               ),
               onPressed: _emailCustomer,
@@ -1880,7 +2848,8 @@ String getCertificateAssetPath(String certType) {
   }
 }
 
-Future<void> fillAndOpenCertificatePdf(String certType, Map<String, String> fields) async {
+Future<String> fillAndOpenCertificatePdf(
+    String certType, Map<String, String> fields, String jobId) async {
   // 1. Load the PDF template from assets
   final assetPath = getCertificateAssetPath(certType);
   final data = await rootBundle.load(assetPath);
@@ -1895,7 +2864,6 @@ Future<void> fillAndOpenCertificatePdf(String certType, Map<String, String> fiel
   // 4. Draw each field at its position
   final page = document.pages[0];
   final font = PdfStandardFont(PdfFontFamily.helvetica, 12);
-
   fields.forEach((field, value) {
     final offset = positions[field];
     if (offset != null) {
@@ -1907,385 +2875,51 @@ Future<void> fillAndOpenCertificatePdf(String certType, Map<String, String> fiel
     }
   });
 
-  // 5. Save to file (in your job's attachments directory)
-  final output = await getApplicationDocumentsDirectory();
-  final address = (fields['Address'] ?? 'certificate').replaceAll(RegExp(r'[\\/:*?"<>|]'), '_'); // sanitize filename
-  final baseName = '$certType $address';
-  int count = 1;
-  String filePath;
+  // 5. Save the document to a persistent location and open it
+  final outputDir = await getApplicationDocumentsDirectory();
+  final certificateDir = Directory('${outputDir.path}/certificates');
+  if (!await certificateDir.exists()) {
+    await certificateDir.create(recursive: true);
+  }
 
-  do {
-    filePath = '${output.path}/$baseName ($count).pdf';
-    count++;
-  } while (await File(filePath).exists());
-
-  final file = File(filePath);
+  final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+  final safeCertType = certType.replaceAll(' ', '_').replaceAll('/', '_');
+  final file = File(
+      '${certificateDir.path}/${jobId}_${safeCertType}_certificate_$timestamp.pdf');
   await file.writeAsBytes(await document.save());
   document.dispose();
 
-  // Attach to job, open, etc.
   await OpenFile.open(file.path);
+  return file.path;
 }
 
-Future<void> createCertificateFlow(BuildContext context, job_model.Job job) async {
-  // Check available licenses
-  final prefs = await SharedPreferences.getInstance();
-  final hasElectricalLicense = (prefs.getString('electrical_license') ?? '').isNotEmpty;
-  final hasGasLicense = (prefs.getString('gas_fitting_license') ?? '').isNotEmpty;
-  
-  // Build list of available certificate options
-  List<Widget> certificateOptions = [];
-  
-  if (hasElectricalLicense) {
-    certificateOptions.addAll([
-      ListTile(
-        leading: Icon(Icons.assignment),
-        title: Text('ESC'),
-        onTap: () => Navigator.pop(context, 'ESC'),
-      ),
-      ListTile(
-        leading: Icon(Icons.assignment),
-        title: Text('COC'),
-        onTap: () => Navigator.pop(context, 'COC'),
-      ),
-      ListTile(
-        leading: Icon(Icons.assignment),
-        title: Text('ROI'),
-        onTap: () => Navigator.pop(context, 'ROI'),
-      ),
-    ]);
-  }
-  
-  if (hasGasLicense) {
-    certificateOptions.add(
-      ListTile(
-        leading: Icon(Icons.local_gas_station, color: Colors.orange),
-        title: Text('Gas COC'),
-        onTap: () => Navigator.pop(context, 'GAS_COC'),
-      ),
-    );
-  }
-  
-  // Show message if no licenses are available
-  if (certificateOptions.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Please add your license numbers in Settings to generate certificates'),
-      ),
-    );
-    return;
-  }
-  
-  // 1. Select certificate type
-  final certType = await showModalBottomSheet<String>(
-    context: context,
-    builder: (context) => Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom + 
-                MediaQuery.of(context).padding.bottom + 16.0,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: certificateOptions,
-      ),
-    ),
-  );
-  if (certType == null) return;
-
-  // 2. Confirm/edit customer info (replace with your own UI as needed)
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text('Confirm Customer Info'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('Name: ${job.customerName}'),
-          Text('Address: ${job.address}'),
-          // Add more fields as needed
-        ],
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Cancel')),
-        ElevatedButton(onPressed: () => Navigator.pop(context, true), child: Text('Continue')),
-      ],
-    ),
-  );
-  if (confirmed != true) return;
-
-  // 3. Prepare fields for PDF
-  final fields = {
-    'Name': job.customerName ?? '',
-    'Address': job.address ?? '',
-    // Add more fields as needed, matching your certificateFieldPositions
-  };
-
-  // 4. Fill and save PDF
-  final pdfPath = await fillAndSaveCertificatePdf(certType, fields, job.id);
-
-  // 5. Attach PDF to job (implement this in your job model/storage)
-  await attachPdfToJob(job.id, pdfPath);
-
-  // 6. Open PDF in external editor
-  await OpenFile.open(pdfPath);
+/// Detects whether an attachment path/filename looks like a certificate
+/// document (COC, ESC, ROI, Gas COC) generated either via
+/// [DocumentNamingService] (e.g. "COC 10 Main Road 11111111.pdf") or via
+/// `fillAndOpenCertificatePdf` (e.g. "123_COC_certificate_20260704.pdf").
+bool _isCertificateAttachment(String path) {
+  final fileName = path.split(RegExp(r'[\\/]+')).last.toLowerCase().trim();
+  if (fileName.contains('certificate')) return true;
+  return fileName.startsWith('coc ') ||
+      fileName.startsWith('coc_') ||
+      fileName.startsWith('esc ') ||
+      fileName.startsWith('esc_') ||
+      fileName.startsWith('roi ') ||
+      fileName.startsWith('roi_') ||
+      fileName.startsWith('gas coc') ||
+      fileName.startsWith('gas_coc');
 }
 
-// Helper: Fill and save PDF, return file path
-Future<String> fillAndSaveCertificatePdf(String certType, Map<String, String> fields, String jobId) async {
-  try {
-    
-    // Get the documents directory
-    final directory = await getApplicationDocumentsDirectory();
-    final certificatesDir = Directory('${directory.path}/certificates');
-    if (!await certificatesDir.exists()) {
-      await certificatesDir.create(recursive: true);
-    }
-    
-    // Create a simple PDF document using syncfusion_flutter_pdf
-    final PdfDocument document = PdfDocument();
-    final PdfPage page = document.pages.add();
-    final PdfGraphics graphics = page.graphics;
-    
-    // Set up fonts and layout
-    final PdfFont titleFont = PdfStandardFont(PdfFontFamily.helvetica, 24, style: PdfFontStyle.bold);
-    final PdfFont headerFont = PdfStandardFont(PdfFontFamily.helvetica, 16, style: PdfFontStyle.bold);
-    final PdfFont bodyFont = PdfStandardFont(PdfFontFamily.helvetica, 12);
-    
-    double yPosition = 50;
-    
-    // Title
-    graphics.drawString(
-      '$certType Certificate',
-      titleFont,
-      bounds: Rect.fromLTWH(0, yPosition, page.getClientSize().width, 30),
-      format: PdfStringFormat(alignment: PdfTextAlignment.center),
-    );
-    yPosition += 60;
-    
-    // Job Information
-    graphics.drawString(
-      'Job Information',
-      headerFont,
-      bounds: Rect.fromLTWH(20, yPosition, 200, 20),
-    );
-    yPosition += 30;
-    
-    graphics.drawString(
-      'Job ID: $jobId',
-      bodyFont,
-      bounds: Rect.fromLTWH(20, yPosition, 300, 15),
-    );
-    yPosition += 20;
-    
-    graphics.drawString(
-      'Date: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
-      bodyFont,
-      bounds: Rect.fromLTWH(20, yPosition, 300, 15),
-    );
-    yPosition += 40;
-    
-    // Certificate Fields
-    graphics.drawString(
-      'Certificate Details',
-      headerFont,
-      bounds: Rect.fromLTWH(20, yPosition, 200, 20),
-    );
-    yPosition += 30;
-    
-    // Add all the fields from the form
-    fields.forEach((key, value) {
-      if (value.isNotEmpty) {
-        graphics.drawString(
-          '$key: $value',
-          bodyFont,
-          bounds: Rect.fromLTWH(20, yPosition, page.getClientSize().width - 40, 15),
-        );
-        yPosition += 20;
-      }
-    });
-    
-    // Add signature area
-    yPosition += 40;
-    graphics.drawString(
-      'Authorized Signature',
-      headerFont,
-      bounds: Rect.fromLTWH(20, yPosition, 200, 20),
-    );
-    yPosition += 40;
-    
-    // Draw signature line
-    graphics.drawLine(
-      PdfPen(PdfColor(0, 0, 0)),
-      Offset(20, yPosition),
-      Offset(300, yPosition),
-    );
-    yPosition += 20;
-    
-    graphics.drawString(
-      'Date: _________________',
-      bodyFont,
-      bounds: Rect.fromLTWH(20, yPosition, 200, 15),
-    );
-    
-    // Generate timestamp-based filename
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final fileName = '${jobId}_${certType}_$timestamp.pdf';
-    final file = File('${certificatesDir.path}/$fileName');
-    
-    // Save the document
-    final List<int> bytes = await document.save();
-    await file.writeAsBytes(bytes);
-    
-    // Clean up
-    document.dispose();
-    
-    return file.path;
-    
-  } catch (e) {
-    throw Exception('Failed to create certificate PDF: $e');
-  }
-}
+String getEmailTypeFromAttachments(List<String> attachments) {
+  final lowerPaths = attachments.map((path) => path.toLowerCase()).toList();
+  final hasInvoice = lowerPaths.any((path) => path.contains('invoice'));
+  final hasEstimate = lowerPaths.any((path) => path.contains('estimate'));
+  final hasQuote = lowerPaths.any((path) => path.contains('quote'));
+  final hasCertificate = attachments.any(_isCertificateAttachment);
 
-// Attach PDF to job by adding it to job attachments
-Future<void> attachPdfToJob(String jobId, String pdfPath) async {
-  try {
-    
-    // Load all jobs to find and update the specific job
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/jobs.json');
-    
-    if (await file.exists()) {
-      final jsonString = await file.readAsString();
-      final List<dynamic> jsonList = jsonDecode(jsonString);
-      final jobs = jsonList.map((e) => job_model.Job.fromJson(e)).toList();
-      
-      // Find the job and update its attachments
-      final jobIndex = jobs.indexWhere((job) => job.id == jobId);
-      if (jobIndex != -1) {
-        final currentJob = jobs[jobIndex];
-        final currentAttachments = currentJob.attachments ?? [];
-        final updatedJob = currentJob.copyWith(
-          attachments: [...currentAttachments, pdfPath],
-        );
-        jobs[jobIndex] = updatedJob;
-        
-        // Save the updated jobs list
-        final updatedJsonList = jobs.map((job) => job.toJson()).toList();
-        await file.writeAsString(jsonEncode(updatedJsonList));
-        
-      } else {
-        throw Exception('Job not found: $jobId');
-      }
-    } else {
-      throw Exception('Jobs file not found');
-    }
-    
-  } catch (e) {
-    throw Exception('Failed to attach PDF to job: $e');
-  }
-}
-
-// Example usage in a button:
-// ElevatedButton(
-//   onPressed: () async {
-//     await sendEmail(
-//       to: 'test@example.com',
-//       subject: 'Test Subject',
-//       body: 'Hello from Flutter!',
-//       // attachments: ['/path/to/file.pdf'],
-//     );
-//   },
-//   child: Text('Send Email'),
-// )
-Future<void> sendEmailViaSmtp({
-  required String toEmail,
-  required String subject,
-  required String body,
-  List<String>? attachmentPaths, // Pass file paths here if needed
-}) async {
-  
-  // Load SMTP settings from SharedPreferences
-  final prefs = await SharedPreferences.getInstance();
-  final smtpEmail = prefs.getString('smtp_email') ?? '';
-  final smtpPassword = prefs.getString('smtp_password') ?? '';
-  final smtpServer = (prefs.getString('smtp_server') ?? 'smtp.gmail.com').trim();
-  final smtpPort = int.tryParse(prefs.getString('smtp_port') ?? '587') ?? 587;
-  final companyName = prefs.getString('company_name') ?? 'Company';
-  final mainEmail = prefs.getString('main_email') ?? '';
-
-
-  if (smtpEmail.isEmpty || smtpPassword.isEmpty) {
-    final errorMsg = 'SMTP settings incomplete. Missing: ${smtpEmail.isEmpty ? 'email ' : ''}${smtpPassword.isEmpty ? 'password' : ''}';
-    throw Exception('$errorMsg Please configure SMTP settings in Settings.');
-  }
-
-  final server = SmtpServer(
-    smtpServer,
-    port: smtpPort,
-    username: smtpEmail,
-    password: smtpPassword,
-    ssl: smtpPort == 465,
-    allowInsecure: false,
-  );
-
-  final message = Message()
-    ..from = Address(smtpEmail, companyName)
-    ..recipients.add(toEmail);
-
-  // Always BCC the main company email if it's different from SMTP email
-  if (mainEmail.isNotEmpty && mainEmail != smtpEmail) {
-    message.bccRecipients.add(mainEmail);
-  }
-
-  message.subject = subject;
-  message.text = body;
-
-  // Add attachments if provided
-  if (attachmentPaths != null && attachmentPaths.isNotEmpty) {
-    for (final path in attachmentPaths) {
-      try {
-        final file = File(path);
-        if (await file.exists()) {
-          message.attachments.add(FileAttachment(file));
-        } else {
-        }
-      } catch (e) {
-      }
-    }
-  }
-
-  try {
-    await send(message, server);
-  } on MailerException catch (e) {
-    
-    // Provide more specific error messages
-    String userFriendlyError = 'Failed to send email';
-    if (e.message.contains('authentication') || e.message.contains('Invalid login')) {
-      userFriendlyError = 'Email authentication failed. Please check your SMTP username and password.';
-    } else if (e.message.contains('connection') || e.message.contains('timeout')) {
-      userFriendlyError = 'Could not connect to email server. Please check your internet connection and SMTP server settings.';
-    } else if (e.message.contains('TLS') || e.message.contains('SSL')) {
-      userFriendlyError = 'Secure connection failed. Please verify your SMTP port and security settings.';
-    } else if (e.message.contains('recipient')) {
-      userFriendlyError = 'Invalid recipient email address.';
-    }
-    
-    throw Exception('$userFriendlyError\n\nTechnical details: ${e.message}');
-  } catch (e) {
-    throw Exception('Unexpected error sending email: $e');
-  }
-}
-
-String getEmailTypeFromAttachments(List<String>? attachmentPaths) {
-  if (attachmentPaths == null || attachmentPaths.isEmpty) return 'message';
-
-  final lowerNames = attachmentPaths.map((e) => e.toLowerCase()).toList();
-  final hasInvoice = lowerNames.any((f) => f.contains('invoice'));
-  final hasEstimate = lowerNames.any((f) => f.contains('estimate'));
-  final hasQuote = lowerNames.any((f) => f.contains('quote'));
-
+  if (hasInvoice && hasCertificate) return 'invoice_certificate';
+  if (hasInvoice && hasEstimate) return 'estimate';
   if (hasInvoice) return 'invoice';
-  if (hasEstimate && hasQuote) return 'estimate'; // treat as estimate if both
   if (hasEstimate) return 'estimate';
   if (hasQuote) return 'quote';
   return 'message';
@@ -2293,22 +2927,32 @@ String getEmailTypeFromAttachments(List<String>? attachmentPaths) {
 
 Future<Map<String, String>> getPrefilledEmail({
   required String emailType,
-  required String customerFirstName,
-  String? companyName,
-  String? firstName,
-  String? lastName,
-  String? mainEmail,
+  required String customerName,
 }) async {
-  // Load settings if not provided
   final prefs = await SharedPreferences.getInstance();
-  final finalCompanyName = companyName ?? prefs.getString('company_name') ?? 'Company';
-  final finalFirstName = firstName ?? prefs.getString('first_name') ?? 'Team';
-  final finalLastName = lastName ?? prefs.getString('last_name') ?? '';
-  final finalMainEmail = mainEmail ?? prefs.getString('main_email') ?? '';
-  final reviewLink = prefs.getString('review_link') ?? '';
-  
-  // Load custom message templates
-  final invoiceTemplate = prefs.getString('invoice_message') ?? '''Hi {customerName}
+  final companyName = prefs.getString('company_name') ?? '';
+  final mainEmail = prefs.getString('main_email') ?? '';
+  final fullName =
+      '${prefs.getString('first_name') ?? ''} ${prefs.getString('last_name') ?? ''}'
+          .trim();
+
+  String template;
+  switch (emailType) {
+    case 'invoice':
+      template = prefs.getString('invoice_message') ??
+          '''Hi {customerName}
+
+Find attached your invoice.
+
+{reviewText}Many Thanks
+{fullName}
+
+{companyName}
+{mainEmail}''';
+      break;
+    case 'invoice_certificate':
+      template = prefs.getString('invoice_certificate_message') ??
+          '''Hi {customerName}
 
 Find attached your invoice and electrical certificate.
 
@@ -2317,8 +2961,10 @@ Find attached your invoice and electrical certificate.
 
 {companyName}
 {mainEmail}''';
-
-  final estimateTemplate = prefs.getString('estimate_message') ?? '''Hi {customerName}
+      break;
+    case 'estimate':
+      template = prefs.getString('estimate_message') ??
+          '''Hi {customerName}
 
 Great to meet you and look at your project.
 
@@ -2329,8 +2975,10 @@ Many Thanks
 
 {companyName}
 {mainEmail}''';
-
-  final quoteTemplate = prefs.getString('quote_message') ?? '''Hi {customerName}
+      break;
+    case 'quote':
+      template = prefs.getString('quote_message') ??
+          '''Hi {customerName}
 
 Great to meet you and look at your project.
 
@@ -2341,9 +2989,10 @@ Many Thanks
 
 {companyName}
 {mainEmail}''';
-
-  final messageTemplate = prefs.getString('message_template') ?? '''Hi {customerName}
-
+      break;
+    default:
+      template = prefs.getString('message_template') ??
+          '''Hi {customerName}
 
 
 Many Thanks
@@ -2351,162 +3000,65 @@ Many Thanks
 
 {companyName}
 {mainEmail}''';
-  
-  final fullName = '$finalFirstName $finalLastName'.trim();
-
-  // Add review text if link is provided
-  final reviewText = reviewLink.isNotEmpty 
-      ? 'If you would like to leave a review, here is our link: $reviewLink\n\n'
-      : '';
-
-  // Helper function to replace placeholders
-  String replacePlaceholders(String template) {
-    return template
-        .replaceAll('{customerName}', customerFirstName)
-        .replaceAll('{fullName}', fullName)
-        .replaceAll('{companyName}', finalCompanyName)
-        .replaceAll('{mainEmail}', finalMainEmail.isNotEmpty ? finalMainEmail : '')
-        .replaceAll('{reviewText}', reviewText);
   }
 
-  switch (emailType) {
-    case 'invoice':
-      return {
-        'subject': 'Invoice from $finalCompanyName',
-        'body': replacePlaceholders(invoiceTemplate),
-      };
-    case 'estimate':
-      return {
-        'subject': 'Estimate from $finalCompanyName',
-        'body': replacePlaceholders(estimateTemplate),
-      };
-    case 'quote':
-      return {
-        'subject': 'Quote from $finalCompanyName',
-        'body': replacePlaceholders(quoteTemplate),
-      };
-    default:
-      return {
-        'subject': 'Message from $finalCompanyName',
-        'body': replacePlaceholders(messageTemplate),
-      };
-  }
-}
+  final body = template
+      .replaceAll(
+          '{customerName}',
+          customerName.trim().isEmpty
+              ? 'Customer'
+              : customerName.trim().split(RegExp(r'\s+')).first)
+      .replaceAll('{fullName}', fullName)
+      .replaceAll('{companyName}', companyName)
+      .replaceAll('{mainEmail}', mainEmail)
+      .replaceAll('{reviewText}', '');
 
-// Add this helper somewhere in your file:
-Future<Duration?> showDelayPickerDialog(BuildContext context) async {
-  return showDialog<Duration>(
-    context: context,
-    builder: (context) => SimpleDialog(
-      title: const Text('Send Email When?'),
-      children: [
-        SimpleDialogOption(
-          child: const Text('Now'),
-          onPressed: () => Navigator.pop(context, Duration.zero),
-        ),
-        SimpleDialogOption(
-          child: const Text('In 5 minutes'),
-          onPressed: () => Navigator.pop(context, const Duration(minutes: 5)),
-        ),
-        SimpleDialogOption(
-          child: const Text('In 30 minutes'),
-          onPressed: () => Navigator.pop(context, const Duration(minutes: 30)),
-        ),
-        SimpleDialogOption(
-          child: const Text('In 1 hour'),
-          onPressed: () => Navigator.pop(context, const Duration(hours: 1)),
-        ),
-        SimpleDialogOption(
-          child: const Text('Cancel'),
-          onPressed: () => Navigator.pop(context, null),
-        ),
-      ],
-    ),
-  );
+  late final String subject;
+  if (emailType == 'invoice' || emailType == 'invoice_certificate') {
+    subject = 'Invoice for ${customerName.isEmpty ? 'Customer' : customerName}';
+  } else if (emailType == 'estimate') {
+    subject =
+        'Estimate for ${customerName.isEmpty ? 'Customer' : customerName}';
+  } else if (emailType == 'quote') {
+    subject = 'Quote for ${customerName.isEmpty ? 'Customer' : customerName}';
+  } else {
+    subject = 'Message for ${customerName.isEmpty ? 'Customer' : customerName}';
+  }
+
+  return {'subject': subject, 'body': body};
 }
 
 String formatDate(DateTime? date) {
-  if (date == null) return "Not set";
-  return "${date.day}/${date.month}/${date.year}";
+  if (date == null) return 'No date';
+  return DateFormat('dd/MM/yyyy').format(date);
 }
 
-Future<List<EstimateBuild>> loadAllEstimateBuilds() async {
-  final prefs = await SharedPreferences.getInstance();
-  final jsonList = prefs.getStringList('estimate_builds') ?? [];
-  return jsonList.map((s) => EstimateBuild.fromJson(jsonDecode(s))).toList();
-}
-
-Future<void> addOrUpdateEstimateBuild(EstimateBuild build) async {
-  final builds = await loadAllEstimateBuilds();
-  // Remove any existing build with the same id
-  builds.removeWhere((b) => b.id == build.id);
-  builds.add(build);
-  await saveAllEstimateBuilds(builds);
-}
-
-Future<void> saveAllEstimateBuilds(List<EstimateBuild> builds) async {
-  final prefs = await SharedPreferences.getInstance();
-  final jsonList = builds.map((b) => jsonEncode(b.toJson())).toList();
-  await prefs.setStringList('estimate_builds', jsonList);
-}
-
-class _TemplatePickerDialog extends StatefulWidget {
-  final List<EstimateTemplate> templates;
-  const _TemplatePickerDialog({required this.templates});
-
-  @override
-  State<_TemplatePickerDialog> createState() => _TemplatePickerDialogState();
-}
-
-class _TemplatePickerDialogState extends State<_TemplatePickerDialog> {
-  String search = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final filtered = widget.templates
-        .where((t) => t.name.toLowerCase().contains(search.toLowerCase()))
-        .toList();
-
-    return AlertDialog(
-      title: const Text('Select Estimate Template'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Search templates',
-                prefixIcon: Icon(Icons.search),
-              ),
-              onChanged: (val) => setState(() => search = val),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: filtered.isEmpty
-                  ? const Center(child: Text('No templates found.'))
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: filtered.length,
-                      itemBuilder: (context, index) {
-                        final template = filtered[index];
-                        return ListTile(
-                          title: Text(template.name),
-                          onTap: () => Navigator.pop(context, template),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
+Future<Duration?> showDelayPickerDialog(BuildContext context) async {
+  return showDialog<Duration>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Send Email After'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            title: const Text('Send now'),
+            onTap: () => Navigator.pop(context, Duration.zero),
+          ),
+          ListTile(
+            title: const Text('Send in 5 minutes'),
+            onTap: () => Navigator.pop(context, const Duration(minutes: 5)),
+          ),
+          ListTile(
+            title: const Text('Send in 10 minutes'),
+            onTap: () => Navigator.pop(context, const Duration(minutes: 10)),
+          ),
+          ListTile(
+            title: const Text('Send in 30 minutes'),
+            onTap: () => Navigator.pop(context, const Duration(minutes: 30)),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, null),
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
-  }
+    ),
+  );
 }
-

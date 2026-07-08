@@ -3,12 +3,19 @@ import '../models/job.dart';
 import '../widgets/job_details_dialog.dart';
 import 'job_details_screen.dart';
 import '../models/customer.dart';
-import 'pricebook_screen.dart';
+import 'pricebook_extensive_screen.dart' show PriceBookItem;
 import 'dart:convert';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/firestore_service.dart';
+import '../widgets/address_search_field.dart';
+import '../services/job_number_service.dart';
+import '../widgets/multi_date_picker_dialog.dart';
+import '../services/weather_service.dart';
+import '../services/address_search_service.dart';
+import '../widgets/weather_summary_tile.dart';
+import '../route_observer.dart';
 
 class JobsScreen extends StatefulWidget {
   final List<Customer> customers;
@@ -17,28 +24,71 @@ class JobsScreen extends StatefulWidget {
   final void Function(String) onRemove;
 
   const JobsScreen({
+    super.key,
     required this.customers,
     required this.onAdd,
     required this.onUpdate,
     required this.onRemove,
-    super.key,
   });
 
   @override
   State<JobsScreen> createState() => _JobsScreenState();
 }
 
-class _JobsScreenState extends State<JobsScreen> {
-  List<JobStatus> _selectedStatuses = [JobStatus.active]; // Multi-select statuses
+class _JobsScreenState extends State<JobsScreen> with RouteAware {
   List<Job> jobs = [];
+  List<PriceBookItem> priceBook = [];
   String search = '';
-  List<PriceBookItem> priceBook = <PriceBookItem>[];
+  String _statusFilter = 'active';
 
   @override
   void initState() {
     super.initState();
-    _loadJobs();
+    jobs = [];
+    priceBook = [];
+    search = '';
+    _statusFilter = 'active';
+    _loadJobsFromDisk();
     _loadPriceBook();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  @override
+  void didPopNext() {
+    // Reload jobs (and pricebook) from disk every time the user returns to
+    // this screen (e.g. after viewing/editing a job in JobDetailsScreen),
+    // so the list always reflects the latest status/changes.
+    _loadJobsFromDisk();
+    _loadPriceBook();
+  }
+
+  bool _matchesStatusFilter(Job job) {
+    switch (_statusFilter) {
+      case 'all':
+        return true;
+      case 'completed':
+        return job.currentStatus == JobStatus.jobComplete;
+      case 'archived':
+        return job.currentStatus == JobStatus.archived;
+      case 'active':
+      default:
+        return job.currentStatus != JobStatus.jobComplete &&
+            job.currentStatus != JobStatus.archived;
+    }
   }
 
   Future<File> get _jobsFile async {
@@ -52,6 +102,7 @@ class _JobsScreenState extends State<JobsScreen> {
       if (await file.exists()) {
         final jsonString = await file.readAsString();
         final List<dynamic> jsonList = jsonDecode(jsonString);
+
         setState(() {
           jobs = jsonList.map((e) => Job.fromJson(e)).toList();
         });
@@ -67,8 +118,12 @@ class _JobsScreenState extends State<JobsScreen> {
     final file = await _jobsFile;
     final jsonList = jobs.map((job) => job.toJson()).toList();
     await file.writeAsString(jsonEncode(jsonList));
-    
-    // Save to cloud - sync all jobs
+
+    // Sync to cloud in background so job creation can continue immediately
+    _syncJobsToCloud();
+  }
+
+  Future<void> _syncJobsToCloud() async {
     try {
       for (final job in jobs) {
         await FirestoreService.saveJob(job);
@@ -76,7 +131,7 @@ class _JobsScreenState extends State<JobsScreen> {
       print('✅ All jobs synced to cloud');
     } catch (e) {
       print('❌ Error syncing jobs to cloud: $e');
-      // Don't throw - local save is still important
+      // Do not rethrow so local save stays successful
     }
   }
 
@@ -92,11 +147,23 @@ class _JobsScreenState extends State<JobsScreen> {
     final file = File('${directory.path}/price_book.json');
     if (await file.exists()) {
       final jsonString = await file.readAsString();
-      final List<dynamic> jsonList = jsonDecode(jsonString);
+      final decoded = jsonDecode(jsonString);
+      final List<dynamic> jsonList;
+      if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
+        jsonList = decoded['items'] as List<dynamic>;
+      } else if (decoded is List<dynamic>) {
+        jsonList = decoded;
+      } else {
+        throw Exception('Unexpected pricebook JSON structure');
+      }
       setState(() {
         priceBook = jsonList.map((e) => PriceBookItem.fromJson(e)).toList();
       });
     }
+  }
+
+  Future<void> _loadJobsFromDisk() async {
+    await _loadJobs();
   }
 
   @override
@@ -108,18 +175,29 @@ class _JobsScreenState extends State<JobsScreen> {
 
     final filtered = jobs.where((job) {
       // Filter by selected statuses
-      final matchesStatus = job.matchesStatuses(_selectedStatuses);
-      
+      final matchesStatus = _matchesStatusFilter(job);
+
       // Filter by search term
-      final matchesSearch = (job.title.toLowerCase().contains(search.toLowerCase()) ||
-       (job.customerName ?? '').toLowerCase().contains(search.toLowerCase()) ||
-       (job.address ?? '').toLowerCase().contains(search.toLowerCase()) ||
-       (job.description ?? '').toLowerCase().contains(search.toLowerCase()) ||
-       job.statusDisplayName.toLowerCase().contains(search.toLowerCase())
-      );
-      
+      final matchesSearch = (job.title
+              .toLowerCase()
+              .contains(search.toLowerCase()) ||
+          (job.customerName ?? '')
+              .toLowerCase()
+              .contains(search.toLowerCase()) ||
+          (job.address ?? '').toLowerCase().contains(search.toLowerCase()) ||
+          (job.description ?? '')
+              .toLowerCase()
+              .contains(search.toLowerCase()) ||
+          job.statusDisplayName.toLowerCase().contains(search.toLowerCase()));
+
       return matchesStatus && matchesSearch;
     }).toList();
+
+    filtered.sort((a, b) {
+      final aCreated = a.created ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bCreated = b.created ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bCreated.compareTo(aCreated);
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -137,6 +215,7 @@ class _JobsScreenState extends State<JobsScreen> {
         child: Column(
           children: [
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(
                 labelText: 'Search jobs',
                 prefixIcon: Icon(Icons.search),
@@ -145,41 +224,44 @@ class _JobsScreenState extends State<JobsScreen> {
               onChanged: (val) => setState(() => search = val),
             ),
             const SizedBox(height: 12),
-            
+
             // Status filter section - now as a compact dropdown
             Row(
               children: [
                 const Icon(Icons.filter_list),
                 const SizedBox(width: 8),
-                const Text('Filter by Status:', style: TextStyle(fontWeight: FontWeight.bold)),
+                Flexible(
+                  child: const Text(
+                    'Filter by Status:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: DropdownButtonFormField<String>(
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
-                    initialValue: _getDropdownValue(),
-                    hint: const Text('Select statuses...'),
+                    value: _statusFilter,
+                    hint: const Text('Select status...'),
                     items: [
-                      const DropdownMenuItem(value: 'all', child: Text('All Statuses')),
-                      const DropdownMenuItem(value: 'none', child: Text('No Filter')),
-                      ...JobStatus.values.map((status) => DropdownMenuItem(
-                        value: status.name,
-                        child: Text(status.displayName),
-                      )),
-                      const DropdownMenuItem(value: 'multiple', child: Text('Multiple Selected')),
+                      const DropdownMenuItem(value: 'all', child: Text('All')),
+                      const DropdownMenuItem(
+                          value: 'active', child: Text('Active')),
+                      const DropdownMenuItem(
+                          value: 'completed', child: Text('Completed')),
+                      const DropdownMenuItem(
+                          value: 'archived', child: Text('Archived')),
                     ],
                     onChanged: (value) {
-                      if (value == 'all') {
-                        setState(() => _selectedStatuses = JobStatus.values.toList());
-                      } else if (value == 'none') {
-                        setState(() => _selectedStatuses = []);
-                      } else if (value != 'multiple') {
-                        final status = JobStatus.values.firstWhere((s) => s.name == value);
-                        setState(() => _selectedStatuses = [status]);
-                      } else {
-                        _showMultiSelectDialog();
+                      if (value != null) {
+                        setState(() {
+                          _statusFilter = value;
+                        });
                       }
                     },
                   ),
@@ -187,7 +269,7 @@ class _JobsScreenState extends State<JobsScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            
+
             // Results summary
             Container(
               width: double.infinity,
@@ -202,7 +284,7 @@ class _JobsScreenState extends State<JobsScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            
+
             Expanded(
               child: ListView.builder(
                 itemCount: filtered.length,
@@ -225,18 +307,21 @@ class _JobsScreenState extends State<JobsScreen> {
                         children: [
                           GestureDetector(
                             onTap: () => _handleJobTap(job),
-                            child: Text('Customer: ${job.customerName ?? 'No customer'}'),
+                            child: Text(
+                                'Customer: ${job.customerName ?? 'No customer'}'),
                           ),
                           if (job.description?.isNotEmpty == true)
                             Text('Description: ${job.description}'),
                           Row(
                             children: [
                               Expanded(
-                                child: Text('Address: ${job.address ?? "No address"}'),
+                                child: Text(
+                                    'Address: ${job.address ?? "No address"}'),
                               ),
                               if (job.address?.isNotEmpty == true)
                                 IconButton(
-                                  icon: const Icon(Icons.map, color: Colors.blue),
+                                  icon:
+                                      const Icon(Icons.map, color: Colors.blue),
                                   tooltip: 'Open in Maps',
                                   onPressed: () => _openInMaps(job.address!),
                                   constraints: const BoxConstraints(),
@@ -246,7 +331,8 @@ class _JobsScreenState extends State<JobsScreen> {
                           ),
                           const SizedBox(height: 4),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
                             decoration: BoxDecoration(
                               color: _getStatusColor(job.currentStatus),
                               borderRadius: BorderRadius.circular(12),
@@ -265,6 +351,10 @@ class _JobsScreenState extends State<JobsScreen> {
                       trailing: PopupMenuButton<String>(
                         onSelected: (value) => _handleJobAction(value, job),
                         itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: 'reschedule',
+                            child: Text('schdule'),
+                          ),
                           const PopupMenuItem(
                             value: 'update_status',
                             child: Text('Update Status'),
@@ -324,76 +414,9 @@ class _JobsScreenState extends State<JobsScreen> {
     }
   }
 
-  /// Get the dropdown value based on selected statuses
-  String _getDropdownValue() {
-    if (_selectedStatuses.isEmpty) return 'none';
-    if (_selectedStatuses.length == JobStatus.values.length) return 'all';
-    if (_selectedStatuses.length == 1) return _selectedStatuses.first.name;
-    return 'multiple';
-  }
-
-  /// Show multi-select dialog for statuses
-  void _showMultiSelectDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Job Statuses'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: MediaQuery.of(context).size.height * 0.6, // Limit height to 60% of screen
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  TextButton(
-                    onPressed: () => setState(() => _selectedStatuses = JobStatus.values.toList()),
-                    child: const Text('Select All'),
-                  ),
-                  TextButton(
-                    onPressed: () => setState(() => _selectedStatuses = []),
-                    child: const Text('Clear All'),
-                  ),
-                ],
-              ),
-              const Divider(),
-              Expanded(
-                child: ListView(
-                  shrinkWrap: true,
-                  children: JobStatus.values.map((status) {
-                    final isSelected = _selectedStatuses.contains(status);
-                    return CheckboxListTile(
-                      title: Text(status.displayName),
-                      value: isSelected,
-                      onChanged: (selected) {
-                        setState(() {
-                          if (selected == true) {
-                            _selectedStatuses = [..._selectedStatuses, status];
-                          } else {
-                            _selectedStatuses = _selectedStatuses.where((s) => s != status).toList();
-                          }
-                        });
-                      },
-                    );
-                  }).toList(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// Handle job tap to view details
-  void _handleJobTap(Job job) {
-    Navigator.push(
+  Future<void> _handleJobTap(Job job) async {
+    final deleted = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => JobDetailsScreen(
@@ -402,32 +425,83 @@ class _JobsScreenState extends State<JobsScreen> {
         ),
       ),
     );
+
+    if (deleted == true) {
+      await _loadJobs();
+    }
   }
 
   /// Open customer address in maps
   void _openInMaps(String address) async {
-    // Add "New Zealand" to the address for better search results
-    final searchAddress = address.contains('New Zealand') || address.contains('NZ') 
-        ? address 
-        : '$address, New Zealand';
-    
-    final encoded = Uri.encodeComponent(searchAddress);
-    final url = 'https://www.google.com/maps/search/?api=1&query=$encoded';
-    
-    if (await canLaunchUrl(Uri.parse(url))) {
-      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-    } else {
+    final trimmedAddress = address.trim();
+    if (trimmedAddress.isEmpty) return;
+
+    final encoded = Uri.encodeComponent(trimmedAddress);
+    final googleMapsUri =
+        Uri.parse('https://www.google.com/maps/search/?api=1&query=$encoded');
+    final geoUri = Uri.parse('geo:0,0?q=$encoded');
+
+    debugPrint('Jobs screen map debug: address="$address"');
+    debugPrint('Jobs screen map debug: googleMapsUri=$googleMapsUri');
+    debugPrint('Jobs screen map debug: geoUri=$geoUri');
+
+    bool launched = false;
+    String failureDetails = '';
+
+    Future<bool> _attemptLaunch(Uri uri, String label) async {
+      try {
+        final canLaunch = await canLaunchUrl(uri);
+        debugPrint('Jobs screen map debug: canLaunchUrl($label)=$canLaunch');
+        if (canLaunch) {
+          launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          debugPrint(
+              'Jobs screen map debug: launchUrl($label, externalApplication) returned $launched');
+          if (launched) {
+            return true;
+          }
+        }
+
+        debugPrint(
+            'Jobs screen map debug: attempting direct launch for $label even though canLaunchUrl=$canLaunch');
+        launched = await launchUrl(uri);
+        debugPrint(
+            'Jobs screen map debug: direct launchUrl($label) returned $launched');
+        return launched;
+      } catch (e, stackTrace) {
+        debugPrint('Jobs screen map debug: Failed to launch $label: $e');
+        debugPrint(stackTrace.toString());
+        failureDetails += '$label launch error: $e\n';
+        return false;
+      }
+    }
+
+    launched = await _attemptLaunch(googleMapsUri, 'googleMapsUri');
+    if (!launched) {
+      debugPrint('Jobs screen map debug: failing over to geoUri');
+      launched = await _attemptLaunch(geoUri, 'geoUri');
+    }
+
+    if (!launched) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open maps')),
+          SnackBar(
+            content: const Text(
+                'Could not open maps. Please check the address and your device settings.'),
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
+      debugPrint(
+          'Jobs screen map debug: failed to open maps. Details:\n$failureDetails');
     }
   }
 
   /// Handle job action menu selections
-  void _handleJobAction(String action, Job job) {
+  Future<void> _handleJobAction(String action, Job job) async {
     switch (action) {
+      case 'reschedule':
+        await _showScheduleCalendarForJob(job);
+        break;
       case 'update_status':
         _showUpdateStatusDialog(job);
         break;
@@ -435,7 +509,7 @@ class _JobsScreenState extends State<JobsScreen> {
         _showStatusHistoryDialog(job);
         break;
       case 'open':
-        Navigator.push(
+        final deleted = await Navigator.push<bool>(
           context,
           MaterialPageRoute(
             builder: (_) => JobDetailsScreen(
@@ -444,12 +518,336 @@ class _JobsScreenState extends State<JobsScreen> {
             ),
           ),
         );
+        if (deleted == true) {
+          await _loadJobs();
+        }
         break;
+    }
+  }
+
+  /// Opens the scheduling calendar for an existing job ("Schedule" action
+  /// from the Jobs list popup menu). Lets the user pick one or more days,
+  /// then optionally set a time for each day, and saves the result onto
+  /// the job.
+  Future<void> _showScheduleCalendarForJob(Job job) async {
+    final now = DateTime.now();
+
+    // Kick off a weather lookup for the job's address (if it has one) so
+    // the "Select schedule days" dialog can show a forecast per day. This
+    // runs in the background - if it doesn't resolve in time, or the job
+    // has no address, the dialog simply won't show weather.
+    List<DailyForecast> jobSiteForecast = [];
+    if (job.address != null && job.address!.trim().isNotEmpty) {
+      try {
+        final geocoded =
+            await AddressSearchService.geocodeAddress(job.address!);
+        if (geocoded?.latitude != null && geocoded?.longitude != null) {
+          jobSiteForecast = await WeatherService.getSevenDayForecast(
+            latitude: geocoded!.latitude!,
+            longitude: geocoded.longitude!,
+          );
+        }
+      } catch (e) {
+        print('⚠️ JobsScreen: failed to fetch weather for job address: $e');
+      }
+      if (!mounted) return;
+    }
+
+    final pickedDates = await showMultiDatePickerDialog(
+      context: context,
+      initialSelectedDates: job.scheduleDates ?? const <DateTime>[],
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 2),
+    );
+    if (pickedDates == null) return; // Cancelled - keep existing schedule.
+    if (!mounted) return;
+
+    Job updatedJob;
+    if (pickedDates.isEmpty) {
+      // "Flexible Day" shortcut chosen on the calendar - no fixed date or
+      // time (midnight dueDate is how this app marks a flexible job, see
+      // scheduling_screen.dart's _isFlexibleForDay).
+      updatedJob = job.copyWith(
+        dueDate: DateTime(now.year, now.month, now.day),
+        scheduleDates: const [],
+      );
+    } else {
+      // Let the user add/edit a time for each picked day, mirroring the
+      // "Create & Schedule" flow used when creating a new job.
+      final finalizedDates = await _showJobScheduleDaysDialog(
+        pickedDates,
+        siteForecast: jobSiteForecast,
+      );
+      if (finalizedDates == null) return; // Cancelled on the time step.
+
+      final sorted = [...finalizedDates]..sort((a, b) => a.compareTo(b));
+      updatedJob = job.copyWith(
+        dueDate: sorted.first,
+        scheduleDates: sorted,
+      );
+    }
+
+    final index = jobs.indexWhere((existing) => existing.id == job.id);
+    if (index != -1) {
+      setState(() {
+        jobs[index] = updatedJob;
+      });
+    }
+    await _saveJobs();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${updatedJob.title} schedule updated.')),
+      );
+    }
+  }
+
+  /// Shows a "Select schedule days" dialog (mirrors the one shown when
+  /// creating a job in JobDetailsDialog) so the user can add/edit a time
+  /// for each picked day. Returns the finalized list of dates (with times
+  /// where set) or null if the user cancels.
+  ///
+  /// [siteForecast], if provided, is used to show the weather for each day
+  /// within the next 7 days (see WeatherService.isWithinForecastWindow).
+  Future<List<DateTime>?> _showJobScheduleDaysDialog(
+      List<DateTime> initialDates,
+      {List<DailyForecast> siteForecast = const []}) async {
+    final selectedDates = [...initialDates];
+    selectedDates.sort((a, b) => a.compareTo(b));
+
+    const dayAbbrev = ['Mon', 'Tues', 'Wed', 'Thurs', 'Fri', 'Sat', 'Sun'];
+
+    return showDialog<List<DateTime>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Select schedule days'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (selectedDates.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Text('No dates selected yet.'),
+                        )
+                      else
+                        ...selectedDates.map((date) {
+                          final dayName = dayAbbrev[date.weekday - 1];
+                          final dateStr =
+                              '${date.day}/${date.month}/${date.year % 100}';
+                          final hasTime = date.hour != 0 || date.minute != 0;
+                          final timeLabel = hasTime
+                              ? TimeOfDay.fromDateTime(date).format(context)
+                              : 'Add time';
+                          final dayForecast =
+                              WeatherService.isWithinForecastWindow(date)
+                                  ? WeatherService.forecastForDate(
+                                      siteForecast, date)
+                                  : null;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        '$dayName $dateStr',
+                                        style: const TextStyle(fontSize: 15),
+                                      ),
+                                    ),
+                                    OutlinedButton.icon(
+                                      icon: Icon(
+                                        hasTime
+                                            ? Icons.access_time
+                                            : Icons.add_alarm,
+                                        size: 16,
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 4),
+                                      ),
+                                      onPressed: () async {
+                                        final pickedTime =
+                                            await showTimePicker(
+                                          context: context,
+                                          initialTime: hasTime
+                                              ? TimeOfDay.fromDateTime(date)
+                                              : const TimeOfDay(
+                                                  hour: 9, minute: 0),
+                                        );
+                                        if (pickedTime == null) return;
+                                        setDialogState(() {
+                                          final index =
+                                              selectedDates.indexWhere(
+                                                  (existing) =>
+                                                      existing.year ==
+                                                          date.year &&
+                                                      existing.month ==
+                                                          date.month &&
+                                                      existing.day ==
+                                                          date.day);
+                                          if (index != -1) {
+                                            selectedDates[index] = DateTime(
+                                              date.year,
+                                              date.month,
+                                              date.day,
+                                              pickedTime.hour,
+                                              pickedTime.minute,
+                                            );
+                                          }
+                                        });
+                                      },
+                                      label: Text(timeLabel),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, size: 18),
+                                      splashRadius: 18,
+                                      tooltip: 'Remove day',
+                                      onPressed: () {
+                                        setDialogState(() {
+                                          selectedDates.removeWhere(
+                                              (existing) =>
+                                                  existing.year ==
+                                                      date.year &&
+                                                  existing.month ==
+                                                      date.month &&
+                                                  existing.day == date.day);
+                                        });
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                if (dayForecast != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: WeatherSummaryTile(
+                                      forecast: dayForecast,
+                                      dense: true,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }),
+                      const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.calendar_month, size: 18),
+                          label: const Text('Edit days'),
+                          onPressed: () async {
+                            final now = DateTime.now();
+                            final picked = await showMultiDatePickerDialog(
+                              context: context,
+                              initialSelectedDates: selectedDates,
+                              firstDate: DateTime(now.year - 1),
+                              lastDate: DateTime(now.year + 2),
+                            );
+                            if (picked == null) return;
+                            setDialogState(() {
+                              final updated = <DateTime>[];
+                              for (final date in picked) {
+                                final existingIndex = selectedDates.indexWhere(
+                                    (existing) =>
+                                        existing.year == date.year &&
+                                        existing.month == date.month &&
+                                        existing.day == date.day);
+                                if (existingIndex != -1) {
+                                  updated.add(selectedDates[existingIndex]);
+                                } else {
+                                  updated.add(date);
+                                }
+                              }
+                              selectedDates
+                                ..clear()
+                                ..addAll(updated)
+                                ..sort((a, b) => a.compareTo(b));
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, null),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: selectedDates.isEmpty
+                      ? null
+                      : () => Navigator.pop(context, selectedDates),
+                  child: const Text('Save Schedule'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Delete any files that belong to a job and remove local metadata files
+  Future<void> _deleteJobFiles(Job job) async {
+    final filePaths = <String>{
+      ...(job.attachments ?? []),
+      ...job.estimateVersions
+          .map((version) => version.filePath)
+          .whereType<String>(),
+      ...job.invoices.map((invoice) => invoice.filePath).whereType<String>(),
+    };
+
+    for (final path in filePaths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        print('Error deleting job file $path: $e');
+      }
+    }
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final jobFile = File('${dir.path}/job_${job.id}.json');
+      if (await jobFile.exists()) {
+        await jobFile.delete();
+      }
+    } catch (e) {
+      print('Error deleting local job metadata for ${job.id}: $e');
+    }
+  }
+
+  /// Delete job document from cloud if authenticated
+  Future<void> _deleteJobFromCloud(Job job) async {
+    if (!FirestoreService.isAuthenticated) return;
+    try {
+      await FirestoreService.deleteJob(job.id);
+    } catch (e) {
+      print('Error deleting cloud job ${job.id}: $e');
     }
   }
 
   /// Show dialog to manually update job status
   void _showUpdateStatusDialog(Job job) {
+    final statusOptions = JobStatus.values
+        .where((status) => status != JobStatus.invoicePaid)
+        .toList();
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -464,20 +862,20 @@ class _JobsScreenState extends State<JobsScreen> {
                 const SizedBox(height: 16),
                 const Text('Select new status:'),
                 const SizedBox(height: 8),
-                ...JobStatus.values.map((status) => RadioListTile<JobStatus>(
-                  title: Text(status.displayName),
-                  value: status,
-                  groupValue: job.currentStatus,
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() {
-                        job.updateStatus(value, reason: 'Manually updated');
-                      });
-                      _saveJobs();
-                      Navigator.pop(context);
-                    }
-                  },
-                )),
+                ...statusOptions.map((status) => RadioListTile<JobStatus>(
+                      title: Text(status.displayName),
+                      value: status,
+                      groupValue: job.currentStatus,
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            job.updateStatus(value, reason: 'Manually updated');
+                          });
+                          _saveJobs();
+                          Navigator.pop(context);
+                        }
+                      },
+                    )),
               ],
             ),
           ),
@@ -487,9 +885,83 @@ class _JobsScreenState extends State<JobsScreen> {
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
           ),
+          TextButton(
+            onPressed: () async {
+              final deleted = await _confirmDeleteJob(job);
+              if (deleted) {
+                Navigator.pop(context);
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete Job'),
+          ),
         ],
       ),
     );
+  }
+
+  Future<bool> _confirmDeleteJob(Job job) async {
+    final firstConfirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Job'),
+        content: const Text('Are you sure you want to delete this job?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (firstConfirm != true) return false;
+
+    final secondConfirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Delete Job'),
+        content:
+            const Text('This action cannot be undone. Do you want to proceed?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Yes, delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (secondConfirm != true) return false;
+
+    await _deleteJobFiles(job);
+    await _deleteJobFromCloud(job);
+
+    setState(() {
+      jobs.removeWhere((existing) => existing.id == job.id);
+    });
+    await _saveJobs();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Job deleted successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+
+    return true;
   }
 
   /// Show status history dialog
@@ -512,9 +984,12 @@ class _JobsScreenState extends State<JobsScreen> {
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Date: ${history.timestamp.toString().substring(0, 16)}'),
-                          if (history.reason != null) Text('Reason: ${history.reason}'),
-                          if (history.documentId != null) Text('Document: ${history.documentId}'),
+                          Text(
+                              'Date: ${history.timestamp.toString().substring(0, 16)}'),
+                          if (history.reason != null)
+                            Text('Reason: ${history.reason}'),
+                          if (history.documentId != null)
+                            Text('Document: ${history.documentId}'),
                         ],
                       ),
                     );
@@ -533,58 +1008,99 @@ class _JobsScreenState extends State<JobsScreen> {
 
   /// Show job details dialog after customer selection
   Future<void> _showJobDetailsDialog(Customer customer) async {
-    final job = await showDialog<Job>(
+    print(
+        'JobsScreen: _showJobDetailsDialog called for customer ${customer.name} (${customer.email})');
+    final result = await showDialog<JobDialogResult>(
       context: context,
       builder: (context) => JobDetailsDialog(
         customer: customer,
-        onJobCreated: (job) {
-          // Add to local jobs list
-          _addJob(job);
-          Navigator.pop(context, job);
+        onJobCreated: (job) async {
+          await _addJob(job);
         },
       ),
     );
-    
-    if (job != null) {
-      // Navigate to job details screen
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => JobDetailsScreen(
-            job: job, 
-            priceBook: priceBook,
-          ),
+    print(
+        'JobsScreen: _showJobDetailsDialog returned job=${result?.job.id} action=${result?.action}');
+    if (result == null) return;
+
+    var job = result.job;
+    if (result.action == 'scheduleAnother') {
+      // Stay on the Jobs list so the user can create/schedule another job.
+      await _loadJobs();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${job.title} scheduled. Add another job below.')),
+        );
+      }
+      return;
+    }
+
+    if (result.action == 'reschedule') {
+      // Came from the Flexible Job/Flexible Period "Confirm & Reschedule"
+      // option - immediately open the scheduling calendar so the user can
+      // firm up an exact date/time for this job.
+      await _showScheduleCalendarForJob(job);
+      final index = jobs.indexWhere((existing) => existing.id == job.id);
+      if (index != -1) {
+        job = jobs[index];
+      }
+    }
+
+    // Default / 'continue' action: go straight to the new job's details.
+    print(
+        'JobsScreen: navigating to JobDetailsScreen for newly created job ${job.id}');
+    final deleted = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => JobDetailsScreen(
+          job: job,
+          priceBook: priceBook,
         ),
-      );
+      ),
+    );
+    print(
+        'JobsScreen: JobDetailsScreen returned deleted=$deleted for created job ${job.id}');
+    if (deleted == true) {
+      await _loadJobs();
     }
   }
 
   Future<void> _showAddJobDialog() async {
+    print('JobsScreen: _showAddJobDialog called');
     await showDialog(
       context: context,
       builder: (context) => AddJobDialog(
         customers: widget.customers,
         onJobCreated: (job) async {
+          print(
+              'JobsScreen: AddJobDialog onJobCreated callback received job ${job.id}');
           await _addJob(job);
           await _loadJobs();
-          // Close the dialog
-          Navigator.pop(context);
-          // Navigate to job details screen
-          Navigator.push(
+          print(
+              'JobsScreen: job saved, navigating to JobDetailsScreen for ${job.id}');
+          final deleted = await Navigator.push<bool>(
             context,
             MaterialPageRoute(
               builder: (context) => JobDetailsScreen(
-                job: job, 
+                job: job,
                 priceBook: priceBook,
               ),
             ),
           );
+          print(
+              'JobsScreen: JobDetailsScreen returned deleted=$deleted for job ${job.id}');
+          if (deleted == true) {
+            await _loadJobs();
+          }
         },
         onCustomerSelected: (customer) async {
+          print(
+              'JobsScreen: onCustomerSelected for ${customer.name} (${customer.email})');
           await _showJobDetailsDialog(customer);
         },
       ),
     );
+    print('JobsScreen: _showAddJobDialog dialog closed');
   }
 }
 
@@ -593,12 +1109,11 @@ class AddJobDialog extends StatefulWidget {
   final void Function(Job)? onJobCreated;
   final void Function(Customer)? onCustomerSelected;
 
-  const AddJobDialog({
-    required this.customers, 
-    this.onJobCreated, 
-    this.onCustomerSelected,
-    super.key
-  });
+  const AddJobDialog(
+      {required this.customers,
+      this.onJobCreated,
+      this.onCustomerSelected,
+      super.key});
 
   @override
   State<AddJobDialog> createState() => _AddJobDialogState();
@@ -623,11 +1138,27 @@ class _AddJobDialogState extends State<AddJobDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredCustomers = widget.customers.where((c) =>
-      c.name.toLowerCase().contains(search.toLowerCase()) ||
-      c.address.toLowerCase().contains(search.toLowerCase()) ||
-      c.email.toLowerCase().contains(search.toLowerCase())
-    ).toList();
+    final filteredCustomers = widget.customers
+        .where((c) =>
+            c.name.toLowerCase().contains(search.toLowerCase()) ||
+            c.address.toLowerCase().contains(search.toLowerCase()) ||
+            c.email.toLowerCase().contains(search.toLowerCase()))
+        .toList();
+
+    final displayCustomers = <Customer>[];
+    if (selectedCustomer != null) {
+      final selectedIndex =
+          filteredCustomers.indexWhere((c) => c.id == selectedCustomer!.id);
+      if (selectedIndex != -1) {
+        displayCustomers.add(filteredCustomers[selectedIndex]);
+        displayCustomers.addAll(
+            filteredCustomers.where((c) => c.id != selectedCustomer!.id));
+      } else {
+        displayCustomers.addAll(filteredCustomers);
+      }
+    } else {
+      displayCustomers.addAll(filteredCustomers);
+    }
 
     return AlertDialog(
       title: const Text('Add Job'),
@@ -638,6 +1169,7 @@ class _AddJobDialogState extends State<AddJobDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: searchController,
                 decoration: const InputDecoration(
                   labelText: 'Search customer',
@@ -656,7 +1188,8 @@ class _AddJobDialogState extends State<AddJobDialog> {
                     // Example:
                     final newCustomer = await showDialog<Customer>(
                       context: context,
-                      builder: (context) => AddCustomerDialog(), // Dialog implemented below
+                      builder: (context) =>
+                          AddCustomerDialog(), // Dialog implemented below
                     );
                     if (newCustomer != null) {
                       setState(() {
@@ -667,23 +1200,52 @@ class _AddJobDialogState extends State<AddJobDialog> {
                   },
                 ),
               ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.person_off),
+                label: const Text('Create Job without Customer'),
+                onPressed: () {
+                  print(
+                      'JobsScreen: AddJobDialog Create Job without Customer selected');
+                  Navigator.pop(context);
+                  if (widget.onCustomerSelected != null) {
+                    widget.onCustomerSelected!(Customer(
+                      id: 'no-customer-${DateTime.now().millisecondsSinceEpoch}',
+                      name: '',
+                      companyName: '',
+                      address: '',
+                      email: '',
+                      phone: '',
+                      paymentTerms: '7 days',
+                    ));
+                  }
+                },
+              ),
               SizedBox(
                 height: 200,
-                child: filteredCustomers.isEmpty
+                child: displayCustomers.isEmpty
                     ? const Center(child: Text('No customers found.'))
                     : ListView.builder(
-                        itemCount: filteredCustomers.length,
+                        itemCount: displayCustomers.length,
                         itemBuilder: (context, index) {
-                          final customer = filteredCustomers[index];
+                          final customer = displayCustomers[index];
                           final isSelected = customer == selectedCustomer;
                           return Card(
                             color: isSelected ? Colors.blue.shade50 : null,
                             child: ListTile(
                               title: Text(customer.name),
                               subtitle: Text(customer.address),
-                              onTap: () => setState(() => selectedCustomer = customer),
+                              onTap: () {
+                                print(
+                                    'JobsScreen: AddJobDialog selected customer ${customer.name}');
+                                setState(() => selectedCustomer =
+                                    selectedCustomer?.id == customer.id
+                                        ? null
+                                        : customer);
+                              },
                               trailing: isSelected
-                                  ? const Icon(Icons.check_circle, color: Colors.blue)
+                                  ? const Icon(Icons.check_circle,
+                                      color: Colors.blue)
                                   : null,
                             ),
                           );
@@ -731,17 +1293,12 @@ class JobDetailsEntryForm extends StatefulWidget {
 class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
   final nameController = TextEditingController();
   final descriptionController = TextEditingController();
+  final orderNumberController = TextEditingController();
   late TextEditingController addressController;
 
-  /// Generate a short job ID starting with 4 digits
-  String _generateShortJobId() {
-    final now = DateTime.now();
-    // Use last 2 digits of year + day of year + random 2 digits for uniqueness
-    final year = now.year % 100; // Last 2 digits of year (e.g., 25 for 2025)
-    final dayOfYear = now.difference(DateTime(now.year, 1, 1)).inDays + 1;
-    final random = (now.millisecond % 100).toString().padLeft(2, '0');
-    
-    return '$year${dayOfYear.toString().padLeft(3, '0')}$random'; // e.g., 2524501 for Sept 1, 2025
+  /// Generate a new sequential job ID in the format J2802, J2803, ...
+  Future<String> _generateShortJobId() async {
+    return JobNumberService.getNextJobId();
   }
 
   @override
@@ -754,6 +1311,7 @@ class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
   void dispose() {
     nameController.dispose();
     descriptionController.dispose();
+    orderNumberController.dispose();
     addressController.dispose();
     super.dispose();
   }
@@ -763,16 +1321,35 @@ class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
     return Column(
       children: [
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: nameController,
           decoration: const InputDecoration(labelText: 'Job Name'),
         ),
         TextField(
+          textCapitalization: TextCapitalization.sentences,
           controller: descriptionController,
-          decoration: const InputDecoration(labelText: 'Job Description (optional)'),
+          decoration:
+              const InputDecoration(labelText: 'Job Description (optional)'),
         ),
+        const SizedBox(height: 12),
         TextField(
+          textCapitalization: TextCapitalization.sentences,
+          controller: orderNumberController,
+          decoration: const InputDecoration(
+            labelText: 'PO / Order Number (optional)',
+            hintText: 'e.g. PO-12345',
+          ),
+        ),
+        const SizedBox(height: 12),
+        AddressSearchField(
           controller: addressController,
-          decoration: const InputDecoration(labelText: 'Site Address'),
+          labelText: 'Site Address (optional)',
+          helperText: 'Optional',
+          onAddressSelected: (address) {
+            setState(() {
+              addressController.text = address.address;
+            });
+          },
         ),
         const SizedBox(height: 12),
         Row(
@@ -785,7 +1362,9 @@ class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
                     ? widget.customer.email
                     : 'No email provided',
                 style: TextStyle(
-                  color: widget.customer.email.isNotEmpty ? Colors.black87 : Colors.grey,
+                  color: widget.customer.email.isNotEmpty
+                      ? Colors.black87
+                      : Colors.grey,
                   fontSize: 16,
                 ),
                 overflow: TextOverflow.ellipsis,
@@ -797,7 +1376,7 @@ class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
         ),
         const SizedBox(height: 24),
         ElevatedButton(
-          onPressed: () {
+          onPressed: () async {
             // Validate required fields
             if (nameController.text.trim().isEmpty) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -805,35 +1384,41 @@ class _JobDetailsEntryFormState extends State<JobDetailsEntryForm> {
               );
               return;
             }
-            
-            if (addressController.text.trim().isEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Site address is required')),
-              );
-              return;
-            }
 
+            // Site address is optional now
             try {
               final newJob = Job(
-                id: _generateShortJobId(),
+                id: await _generateShortJobId(),
                 title: nameController.text.trim(),
-                description: descriptionController.text.trim().isEmpty 
-                    ? null 
+                description: descriptionController.text.trim().isEmpty
+                    ? null
                     : descriptionController.text.trim(),
-                address: addressController.text.trim(),
+                address: addressController.text.trim().isEmpty
+                    ? null
+                    : addressController.text.trim(),
                 customerName: widget.customer.companyName.isNotEmpty
                     ? widget.customer.companyName
                     : widget.customer.name,
-                customerEmail: widget.customer.email.isNotEmpty 
-                    ? widget.customer.email 
+                companyName: widget.customer.companyName.isNotEmpty
+                    ? widget.customer.companyName
+                    : null,
+                bodyCorporateNumber:
+                    widget.customer.bodyCorporateNumber.isNotEmpty
+                        ? widget.customer.bodyCorporateNumber
+                        : null,
+                customerEmail: widget.customer.email.isNotEmpty
+                    ? widget.customer.email
                     : null,
                 status: JobStatus.active,
                 created: DateTime.now(),
                 dueDate: DateTime.now().add(const Duration(days: 7)),
                 jobType: 'General',
-                paymentTerms: widget.customer.paymentTerms.isNotEmpty 
-                    ? widget.customer.paymentTerms 
+                paymentTerms: widget.customer.paymentTerms.isNotEmpty
+                    ? widget.customer.paymentTerms
                     : '7 days',
+                orderNumber: orderNumberController.text.trim().isEmpty
+                    ? null
+                    : orderNumberController.text.trim(),
               );
               widget.onJobCreated(newJob);
             } catch (e) {
@@ -864,20 +1449,105 @@ class _AddCustomerDialogState extends State<AddCustomerDialog> {
   final addressController = TextEditingController();
   final emailController = TextEditingController();
   final phoneController = TextEditingController();
+  final bodyCorporateController = TextEditingController();
   final pasteController = TextEditingController();
+  final ValueNotifier<TextSelection?> selectionNotifier = ValueNotifier(null);
+  TextSelection? _lastSelection;
 
-  // Payment terms options
-  final List<String> paymentTermsOptions = [
-    '7 days',
-    '14 days',
-    '21 days',
-    '20th this month',
-    '20th next month',
-  ];
-  String selectedPaymentTerm = '7 days'; // Default
+  @override
+  void initState() {
+    super.initState();
+    pasteController.addListener(_updateSelection);
+  }
 
-  // For showing paste buttons
-  ValueNotifier<TextSelection?> selectionNotifier = ValueNotifier(null);
+  void _updateSelection() {
+    final selection = pasteController.selection;
+    if (selection != _lastSelection) {
+      _lastSelection = selection;
+      if (selection.isValid && !selection.isCollapsed) {
+        selectionNotifier.value = selection;
+      } else {
+        selectionNotifier.value = null;
+      }
+    }
+  }
+
+  Future<void> _assignSelectedText(String targetField) async {
+    final selection = pasteController.selection;
+    if (!selection.isValid || selection.isCollapsed) return;
+
+    final selectedText =
+        pasteController.text.substring(selection.start, selection.end).trim();
+    if (selectedText.isEmpty) return;
+
+    switch (targetField) {
+      case 'company':
+        companyNameController.text = selectedText;
+        break;
+      case 'name':
+        nameController.text = selectedText;
+        break;
+      case 'address':
+        final pickedAddress = await _pickAddressFromSelection(selectedText);
+        if (pickedAddress != null && pickedAddress.isNotEmpty) {
+          addressController.text = pickedAddress;
+        }
+        break;
+      case 'email':
+        emailController.text = selectedText;
+        break;
+      case 'phone':
+        phoneController.text = selectedText;
+        break;
+      case 'bodyCorporate':
+        bodyCorporateController.text = selectedText;
+        break;
+    }
+
+    selectionNotifier.value = null;
+  }
+
+  Future<String?> _pickAddressFromSelection(String initialQuery) async {
+    final addressSearchController = TextEditingController(text: initialQuery);
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Search Address'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              AddressSearchField(
+                controller: addressSearchController,
+                labelText: 'Address search',
+                helperText:
+                    'Search for the address and select it to use it here',
+                isRequired: true,
+                onAddressSelected: (addressResult) {
+                  Navigator.of(context).pop(addressResult.address);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context)
+                      .pop(addressSearchController.text.trim());
+                },
+                child: const Text('Use typed text'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -886,8 +1556,55 @@ class _AddCustomerDialogState extends State<AddCustomerDialog> {
     addressController.dispose();
     emailController.dispose();
     phoneController.dispose();
+    bodyCorporateController.dispose();
+    pasteController.removeListener(_updateSelection);
     pasteController.dispose();
+    selectionNotifier.dispose();
     super.dispose();
+  }
+
+  Widget _buildSelectionActions() {
+    return ValueListenableBuilder<TextSelection?>(
+      valueListenable: selectionNotifier,
+      builder: (context, selection, _) {
+        if (selection == null) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildPasteActionButton('Company', Icons.business,
+                  () => _assignSelectedText('company')),
+              _buildPasteActionButton(
+                  'Name', Icons.person, () => _assignSelectedText('name')),
+              _buildPasteActionButton('Address', Icons.location_on,
+                  () => _assignSelectedText('address')),
+              _buildPasteActionButton(
+                  'Email', Icons.email, () => _assignSelectedText('email')),
+              _buildPasteActionButton(
+                  'Phone', Icons.phone, () => _assignSelectedText('phone')),
+              _buildPasteActionButton('Body Corporate', Icons.account_balance,
+                  () => _assignSelectedText('bodyCorporate')),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPasteActionButton(
+      String label, IconData icon, VoidCallback onPressed) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 18, color: Colors.white),
+      label: Text(label, style: const TextStyle(color: Colors.white)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      ),
+    );
   }
 
   @override
@@ -898,10 +1615,10 @@ class _AddCustomerDialogState extends State<AddCustomerDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Paste box with floating paste buttons
             Stack(
               children: [
                 TextField(
+                  textCapitalization: TextCapitalization.sentences,
                   controller: pasteController,
                   maxLines: 4,
                   decoration: const InputDecoration(
@@ -909,96 +1626,51 @@ class _AddCustomerDialogState extends State<AddCustomerDialog> {
                     border: OutlineInputBorder(),
                     alignLabelWithHint: true,
                   ),
-                  onTap: () => setState(() {}),
-                  onChanged: (_) => setState(() {}),
-                  // onSelectionChanged is not available for TextField
-                ),
-                ValueListenableBuilder<TextSelection?>(
-                  valueListenable: selectionNotifier,
-                  builder: (context, selection, _) {
-                    final text = pasteController.text;
-                    final hasSelection = selection != null && selection.baseOffset != selection.extentOffset;
-                    if (!hasSelection) return const SizedBox.shrink();
-                    final start = selection.start < selection.end ? selection.start : selection.end;
-                    final end = selection.start < selection.end ? selection.end : selection.start;
-                    final selectedText = text.substring(start, end);
-                    return Positioned(
-                      right: 0,
-                      top: 0,
-                      child: Material(
-                        color: Colors.transparent,
-                        child: Row(
-                          children: [
-                            IconButton(
-                              tooltip: 'Paste to Name',
-                              icon: const Icon(Icons.person),
-                              onPressed: () {
-                                nameController.text = selectedText;
-                                selectionNotifier.value = null;
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Paste to Address',
-                              icon: const Icon(Icons.home),
-                              onPressed: () {
-                                addressController.text = selectedText;
-                                selectionNotifier.value = null;
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Paste to Email',
-                              icon: const Icon(Icons.email),
-                              onPressed: () {
-                                emailController.text = selectedText;
-                                selectionNotifier.value = null;
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Paste to Phone',
-                              icon: const Icon(Icons.phone),
-                              onPressed: () {
-                                phoneController.text = selectedText;
-                                selectionNotifier.value = null;
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
                 ),
               ],
             ),
+            _buildSelectionActions(),
             const SizedBox(height: 12),
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               controller: companyNameController,
-              decoration: const InputDecoration(labelText: 'Company Name (if applicable)'),
+              decoration: const InputDecoration(
+                  labelText: 'Company Name (if applicable)'),
             ),
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               controller: nameController,
               decoration: const InputDecoration(labelText: 'Name'),
             ),
             TextField(
+              textCapitalization: TextCapitalization.sentences,
+              controller: bodyCorporateController,
+              decoration: const InputDecoration(
+                labelText: 'Body Corporate Number (optional)',
+                prefixIcon: Icon(Icons.account_balance),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            AddressSearchField(
               controller: addressController,
-              decoration: const InputDecoration(labelText: 'Address'),
+              labelText: 'Address',
+              helperText: 'Start typing to search for an address',
+              isRequired: true,
+              onAddressSelected: (addressResult) {
+                setState(() {
+                  addressController.text = addressResult.address;
+                });
+              },
             ),
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               controller: emailController,
               decoration: const InputDecoration(labelText: 'Email'),
             ),
             TextField(
+              textCapitalization: TextCapitalization.sentences,
               controller: phoneController,
               decoration: const InputDecoration(labelText: 'Phone'),
-            ),
-            DropdownButtonFormField<String>(
-              initialValue: selectedPaymentTerm,
-              decoration: const InputDecoration(labelText: 'Payment Terms'),
-              items: paymentTermsOptions
-                  .map((term) => DropdownMenuItem(value: term, child: Text(term)))
-                  .toList(),
-              onChanged: (val) {
-                if (val != null) setState(() => selectedPaymentTerm = val);
-              },
             ),
           ],
         ),
@@ -1017,7 +1689,8 @@ class _AddCustomerDialogState extends State<AddCustomerDialog> {
               address: addressController.text,
               email: emailController.text,
               phone: phoneController.text,
-              paymentTerms: selectedPaymentTerm,
+              paymentTerms: '7 days',
+              bodyCorporateNumber: bodyCorporateController.text.trim(),
             );
             Navigator.pop(context, newCustomer);
           },

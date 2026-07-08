@@ -5,7 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/estimate_item.dart' as estimate_item;
-import '../screens/pricebook_screen.dart';
+import '../screens/pricebook_extensive_screen.dart';
 
 class GpsService {
   static double _gpsDistanceRange = 50.0; // Default range in meters
@@ -624,7 +624,7 @@ class GpsService {
                       style: TextStyle(fontWeight: FontWeight.w500),
                     ),
                     const SizedBox(height: 8),
-                    TextField(
+                    TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: addressController,
                       decoration: InputDecoration(
                         hintText: 'e.g., 123 Main St, Wellington, New Zealand',

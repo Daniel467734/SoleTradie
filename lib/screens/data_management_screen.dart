@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:convert';
 import '../services/firestore_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
 
 class DataManagementScreen extends StatefulWidget {
   const DataManagementScreen({super.key});
@@ -14,6 +17,7 @@ class DataManagementScreen extends StatefulWidget {
 
 class _DataManagementScreenState extends State<DataManagementScreen> {
   bool _isClearing = false;
+  bool _isBackingUp = false;
 
   @override
   Widget build(BuildContext context) {
@@ -120,6 +124,39 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
                 onTap: _isClearing ? null : () => _clearSpecificData('settings'),
               ),
             ),
+            const SizedBox(height: 8),
+            
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.delete_forever, color: Colors.teal),
+                title: const Text('Delete Job Data'),
+                subtitle: const Text(
+                  'Keep settings, customers and pricebook while deleting jobs, estimates, invoices, quotes and certificates',
+                ),
+                onTap: _isClearing ? null : _clearTestData,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.backup, color: Colors.blue),
+                title: const Text('Export Backup File'),
+                subtitle: const Text('Save your app data to a backup file for Dropbox/iCloud/Drive storage.'),
+                trailing: const Icon(Icons.arrow_forward_ios),
+                onTap: _isBackingUp ? null : _exportAppBackup,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.restore, color: Colors.green),
+                title: const Text('Import Backup File'),
+                subtitle: const Text('Restore local data from a previously saved backup file.'),
+                trailing: const Icon(Icons.arrow_forward_ios),
+                onTap: _isBackingUp ? null : _importAppBackup,
+              ),
+            ),
+            const SizedBox(height: 24),
             
             if (_isClearing)
               const Padding(
@@ -480,5 +517,219 @@ class _DataManagementScreenState extends State<DataManagementScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _exportAppBackup() async {
+    if (_isBackingUp) return;
+    setState(() => _isBackingUp = true);
+
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final prefs = await SharedPreferences.getInstance();
+      final backup = <String, dynamic>{
+        'generatedAt': DateTime.now().toIso8601String(),
+        'sourceApp': 'sole_trader',
+        'files': <String, dynamic>{},
+        'settings': <String, dynamic>{},
+      };
+
+      await for (final entity in directory.list(recursive: false, followLinks: false)) {
+        if (entity is File && entity.path.toLowerCase().endsWith('.json')) {
+          final fileName = entity.path.split(Platform.pathSeparator).last;
+          try {
+            final contents = await entity.readAsString();
+            backup['files'][fileName] = jsonDecode(contents);
+          } catch (e) {
+            print('Warning: could not parse ${entity.path} as JSON: $e');
+            backup['files'][fileName] = await entity.readAsString();
+          }
+        }
+      }
+
+      for (final key in prefs.getKeys()) {
+        if (key.startsWith('firebase_') || key.startsWith('google_') || key.startsWith('auth_') || key == 'user_logged_in') {
+          continue;
+        }
+        backup['settings'][key] = prefs.get(key);
+      }
+
+      final tempDir = await getTemporaryDirectory();
+      final fileName = 'sole_trader_backup_${DateTime.now().toIso8601String().replaceAll(RegExp(r'[:\\.]'), '-')}.json';
+      final backupFile = File('${tempDir.path}/$fileName');
+      await backupFile.writeAsString(jsonEncode(backup));
+
+      await Share.shareXFiles(
+        [XFile(backupFile.path)],
+        text: 'Sole Tradie backup file created on ${DateTime.now().toLocal()}',
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Backup created and ready to save/share: $fileName'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('Error exporting backup: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to export backup: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() => _isBackingUp = false);
+    }
+  }
+
+  Future<void> _importAppBackup() async {
+    if (_isBackingUp) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Restore Backup'),
+        content: const Text('This will overwrite current local app data with the backup file contents. Continue?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    setState(() => _isBackingUp = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (result == null || result.files.single.path == null) return;
+
+      final backupFile = File(result.files.single.path!);
+      final backupJson = jsonDecode(await backupFile.readAsString()) as Map<String, dynamic>;
+      final files = backupJson['files'] as Map<String, dynamic>?;
+      final settings = backupJson['settings'] as Map<String, dynamic>?;
+      final directory = await getApplicationDocumentsDirectory();
+      final prefs = await SharedPreferences.getInstance();
+
+      if (files != null) {
+        for (final entry in files.entries) {
+          final fileName = entry.key;
+          final fileContent = entry.value;
+          final targetFile = File('${directory.path}/$fileName');
+          await targetFile.writeAsString(jsonEncode(fileContent));
+        }
+      }
+
+      if (settings != null) {
+        for (final entry in settings.entries) {
+          final key = entry.key;
+          final value = entry.value;
+          if (value is String) {
+            await prefs.setString(key, value);
+          } else if (value is int) {
+            await prefs.setInt(key, value);
+          } else if (value is bool) {
+            await prefs.setBool(key, value);
+          } else if (value is double) {
+            await prefs.setDouble(key, value);
+          } else if (value is List<dynamic>) {
+            await prefs.setStringList(key, value.map((e) => e.toString()).toList());
+          }
+        }
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Backup restored successfully! Restart the app to apply changes.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      print('Error importing backup: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to restore backup: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() => _isBackingUp = false);
+    }
+  }
+
+  Future<void> _clearTestData() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset Jobs + Documents'),
+        content: const Text(
+          'This will delete all jobs and related generated documents (invoices, quotes, estimates, certificates) but keep app settings, pricebook, and customer records intact. Continue?'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isClearing = true);
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final prefs = await SharedPreferences.getInstance();
+
+      final jobsFile = File('${directory.path}/jobs.json');
+      if (await jobsFile.exists()) await jobsFile.delete();
+
+      await for (final entity in directory.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          final fileName = entity.path.split(Platform.pathSeparator).last.toLowerCase();
+
+          if (fileName.startsWith('job_') && fileName.endsWith('.json')) {
+            await entity.delete();
+          }
+
+          if (fileName.endsWith('.pdf') &&
+              (fileName.contains('invoice') ||
+               fileName.contains('quote') ||
+               fileName.contains('estimate') ||
+               fileName.contains('certificate') ||
+               fileName.contains('cert'))) {
+            await entity.delete();
+          }
+        }
+      }
+
+      final keys = prefs.getKeys();
+      final estimateKeys = keys.where((k) => k.startsWith('in_progress_estimate_') || k.startsWith('job_'));
+      for (final key in estimateKeys) {
+        await prefs.remove(key);
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Jobs and related documents reset successfully!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error resetting jobs/documents: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() => _isClearing = false);
+    }
   }
 }

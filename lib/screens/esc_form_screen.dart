@@ -6,7 +6,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 import '../models/job.dart';
 import '../services/firestore_service.dart';
 import '../services/sync_scheduler.dart';
@@ -25,41 +24,42 @@ class EscFormScreen extends StatefulWidget {
   State<EscFormScreen> createState() => _EscFormScreenState();
 }
 
-class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin {
+class _EscFormScreenState extends State<EscFormScreen>
+    with DocumentNamingMixin {
   // ESC EWRB Form Field Coordinates (based on A4 page format)
   static const Map<String, Map<String, double>> _escFieldCoordinates = {
     // Reference Number
     'referenceNumber': {'x': 297, 'y': 59, 'width': 232, 'height': 17},
-    
+
     // Site Address
     'siteAddress': {'x': 140, 'y': 127, 'width': 389, 'height': 28},
-    
+
     // Customer Name and Address
     'customerNameAddress': {'x': 141, 'y': 164, 'width': 388, 'height': 42},
-    
+
     // Details of work checkboxes
     'wholeInstallation': {'x': 149, 'y': 218},
     'partOfInstall': {'x': 271, 'y': 218},
-    
+
     // Work Description
     'workDescription': {'x': 141, 'y': 236, 'width': 388, 'height': 324},
-    
+
     // User Information
     'userName': {'x': 139, 'y': 646, 'width': 200, 'height': 20},
     'userLicense': {'x': 394, 'y': 646, 'width': 200, 'height': 20},
-    
+
     // Dates
     'connectionDate': {'x': 140, 'y': 576, 'width': 100, 'height': 20},
     'signDate': {'x': 395, 'y': 684, 'width': 100, 'height': 20},
-    
+
     // Signature
     'signature': {'x': 141, 'y': 683, 'width': 120, 'height': 40},
-    
+
     // Email (auto fill from user email)
     'userEmail': {'x': 140, 'y': 721, 'width': 200, 'height': 20},
-    
+
     // Company Name (auto fill from company name)
-    'companyName': {'x': 140, 'y': 721, 'width': 200, 'height': 20},
+    'companyName': {'x': 140, 'y': 700, 'width': 200, 'height': 20},
   };
 
   // Form controllers - simplified for ESC
@@ -69,13 +69,14 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
   final _userNameController = TextEditingController();
   final _userLicenseController = TextEditingController();
   final _userEmailController = TextEditingController();
+  final _companyNameController = TextEditingController();
   final _workDescriptionController = TextEditingController();
   final _userPhoneController = TextEditingController();
 
   // Form state variables - simplified for ESC
   DateTime _signDate = DateTime.now();
   DateTime _testDate = DateTime.now();
-  
+
   // Details of work checkboxes
   bool _wholeInstallation = false;
   bool _partOfInstall = true; // default ticked as requested
@@ -85,7 +86,6 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
 
   // Auto-save functionality
   Timer? _saveDebounce;
-  bool _hasUnsavedChanges = false;
 
   @override
   void initState() {
@@ -95,26 +95,30 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
 
   Future<void> _initializeForm() async {
     final prefs = await SharedPreferences.getInstance();
-    
+
     // Load expanded info section preference
-    _useExpandedInfoSection = prefs.getBool('use_expanded_info_section') ?? true;
-    
+    _useExpandedInfoSection =
+        prefs.getBool('use_expanded_info_section') ?? true;
+
     // Auto-fill user information from settings
     final firstName = prefs.getString('first_name') ?? '';
     final lastName = prefs.getString('last_name') ?? '';
     final licenseNumber = prefs.getString('electrical_license') ?? '';
     final phoneNumber = prefs.getString('phone_number') ?? '';
     final emailAddress = prefs.getString('personal_email') ?? '';
+    final companyName =
+        prefs.getString('company_name') ?? widget.job.companyName ?? '';
 
     // Set default values
     setState(() {
       _userNameController.text = '$firstName $lastName'.trim();
       _userLicenseController.text = licenseNumber;
       _userEmailController.text = emailAddress;
+      _companyNameController.text = companyName;
       _userPhoneController.text = phoneNumber;
-      _customerNameAddressController.text = widget.job.customerName ?? '';
+      _customerNameAddressController.text = widget.job.documentCustomerName;
       _siteAddressController.text = widget.job.address ?? '';
-      
+
       // Generate reference number
       final jobId = widget.job.id;
       final dateStr = DateFormat('yyyyMMdd').format(DateTime.now());
@@ -122,11 +126,12 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
     });
   }
 
-    @override
+  @override
   void dispose() {
     _userNameController.dispose();
     _userLicenseController.dispose();
     _userEmailController.dispose();
+    _companyNameController.dispose();
     _referenceNumberController.dispose();
     _customerNameAddressController.dispose();
     _siteAddressController.dispose();
@@ -159,11 +164,10 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         font9,
         brush: blackBrush,
         bounds: Rect.fromLTWH(
-          _escFieldCoordinates['referenceNumber']!['x']!, 
-          _escFieldCoordinates['referenceNumber']!['y']!, 
-          _escFieldCoordinates['referenceNumber']!['width']!, 
-          _escFieldCoordinates['referenceNumber']!['height']!
-        ),
+            _escFieldCoordinates['referenceNumber']!['x']!,
+            _escFieldCoordinates['referenceNumber']!['y']!,
+            _escFieldCoordinates['referenceNumber']!['width']!,
+            _escFieldCoordinates['referenceNumber']!['height']!),
       );
 
       // Site Address
@@ -172,11 +176,10 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         font9,
         brush: blackBrush,
         bounds: Rect.fromLTWH(
-          _escFieldCoordinates['siteAddress']!['x']!, 
-          _escFieldCoordinates['siteAddress']!['y']!, 
-          _escFieldCoordinates['siteAddress']!['width']!, 
-          _escFieldCoordinates['siteAddress']!['height']!
-        ),
+            _escFieldCoordinates['siteAddress']!['x']!,
+            _escFieldCoordinates['siteAddress']!['y']!,
+            _escFieldCoordinates['siteAddress']!['width']!,
+            _escFieldCoordinates['siteAddress']!['height']!),
       );
 
       // Customer Name and Address
@@ -185,19 +188,22 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         font9,
         brush: blackBrush,
         bounds: Rect.fromLTWH(
-          _escFieldCoordinates['customerNameAddress']!['x']!, 
-          _escFieldCoordinates['customerNameAddress']!['y']!, 
-          _escFieldCoordinates['customerNameAddress']!['width']!, 
-          _escFieldCoordinates['customerNameAddress']!['height']!
-        ),
+            _escFieldCoordinates['customerNameAddress']!['x']!,
+            _escFieldCoordinates['customerNameAddress']!['y']!,
+            _escFieldCoordinates['customerNameAddress']!['width']!,
+            _escFieldCoordinates['customerNameAddress']!['height']!),
       );
 
       // Details of work checkboxes
       if (_wholeInstallation) {
-        _drawCheckMark(graphics, _escFieldCoordinates['wholeInstallation']!['x']!, _escFieldCoordinates['wholeInstallation']!['y']!);
+        _drawCheckMark(
+            graphics,
+            _escFieldCoordinates['wholeInstallation']!['x']!,
+            _escFieldCoordinates['wholeInstallation']!['y']!);
       }
       if (_partOfInstall) {
-        _drawCheckMark(graphics, _escFieldCoordinates['partOfInstall']!['x']!, _escFieldCoordinates['partOfInstall']!['y']!);
+        _drawCheckMark(graphics, _escFieldCoordinates['partOfInstall']!['x']!,
+            _escFieldCoordinates['partOfInstall']!['y']!);
       }
 
       // Work Description
@@ -206,54 +212,10 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         font8,
         brush: blackBrush,
         bounds: Rect.fromLTWH(
-          _escFieldCoordinates['workDescription']!['x']!, 
-          _escFieldCoordinates['workDescription']!['y']!, 
-          _escFieldCoordinates['workDescription']!['width']!, 
-          _escFieldCoordinates['workDescription']!['height']!
-        ),
-      );
-
-      // User information
-      final userName = _userNameController.text;
-      final userLicense = _userLicenseController.text;
-
-      graphics.drawString(
-        userName,
-        font9,
-        brush: blackBrush,
-        bounds: Rect.fromLTWH(
-          _escFieldCoordinates['userName']!['x']!, 
-          _escFieldCoordinates['userName']!['y']!, 
-          _escFieldCoordinates['userName']!['width']!, 
-          _escFieldCoordinates['userName']!['height']!
-        ),
-      );
-
-      graphics.drawString(
-        userLicense,
-        font8,
-        brush: blackBrush,
-        bounds: Rect.fromLTWH(
-          _escFieldCoordinates['userLicense']!['x']!, 
-          _escFieldCoordinates['userLicense']!['y']!, 
-          _escFieldCoordinates['userLicense']!['width']!, 
-          _escFieldCoordinates['userLicense']!['height']!
-        ),
-      );
-
-      // Dates
-      final signDateStr = DateFormat('dd/MM/yyyy').format(_signDate);
-      
-      graphics.drawString(
-        signDateStr,
-        font9,
-        brush: blackBrush,
-        bounds: Rect.fromLTWH(
-          _escFieldCoordinates['signDate']!['x']!, 
-          _escFieldCoordinates['signDate']!['y']!, 
-          _escFieldCoordinates['signDate']!['width']!, 
-          _escFieldCoordinates['signDate']!['height']!
-        ),
+            _escFieldCoordinates['workDescription']!['x']!,
+            _escFieldCoordinates['workDescription']!['y']!,
+            _escFieldCoordinates['workDescription']!['width']!,
+            _escFieldCoordinates['workDescription']!['height']!),
       );
 
       // Include signature if available
@@ -266,16 +228,91 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
           graphics.drawImage(
             signatureImage,
             Rect.fromLTWH(
-              _escFieldCoordinates['signature']!['x']!, 
-              _escFieldCoordinates['signature']!['y']!, 
-              _escFieldCoordinates['signature']!['width']!, 
-              _escFieldCoordinates['signature']!['height']!
-            ),
+                _escFieldCoordinates['signature']!['x']!,
+                _escFieldCoordinates['signature']!['y']!,
+                _escFieldCoordinates['signature']!['width']!,
+                _escFieldCoordinates['signature']!['height']!),
           );
         } catch (e) {
           print('Error loading signature: $e');
         }
       }
+
+      // User information
+      final userName = _userNameController.text;
+      final userLicense = _userLicenseController.text;
+      final companyName = _companyNameController.text;
+      final userEmail = _userEmailController.text;
+      final connectionDateStr = DateFormat('dd/MM/yyyy').format(_testDate);
+
+      graphics.drawString(
+        userName,
+        font9,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['userName']!['x']!,
+            _escFieldCoordinates['userName']!['y']!,
+            _escFieldCoordinates['userName']!['width']!,
+            _escFieldCoordinates['userName']!['height']!),
+      );
+
+      graphics.drawString(
+        userLicense,
+        font8,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['userLicense']!['x']!,
+            _escFieldCoordinates['userLicense']!['y']!,
+            _escFieldCoordinates['userLicense']!['width']!,
+            _escFieldCoordinates['userLicense']!['height']!),
+      );
+
+      graphics.drawString(
+        companyName,
+        font9,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['companyName']!['x']!,
+            _escFieldCoordinates['companyName']!['y']!,
+            _escFieldCoordinates['companyName']!['width']!,
+            _escFieldCoordinates['companyName']!['height']!),
+      );
+
+      graphics.drawString(
+        userEmail,
+        font9,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['userEmail']!['x']!,
+            _escFieldCoordinates['userEmail']!['y']!,
+            _escFieldCoordinates['userEmail']!['width']!,
+            _escFieldCoordinates['userEmail']!['height']!),
+      );
+
+      // Dates
+      final signDateStr = DateFormat('dd/MM/yyyy').format(_signDate);
+
+      graphics.drawString(
+        signDateStr,
+        font9,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['signDate']!['x']!,
+            _escFieldCoordinates['signDate']!['y']!,
+            _escFieldCoordinates['signDate']!['width']!,
+            _escFieldCoordinates['signDate']!['height']!),
+      );
+
+      graphics.drawString(
+        connectionDateStr,
+        font9,
+        brush: blackBrush,
+        bounds: Rect.fromLTWH(
+            _escFieldCoordinates['connectionDate']!['x']!,
+            _escFieldCoordinates['connectionDate']!['y']!,
+            _escFieldCoordinates['connectionDate']!['width']!,
+            _escFieldCoordinates['connectionDate']!['height']!),
+      );
 
       // Save the PDF
       final output = await getApplicationDocumentsDirectory();
@@ -283,18 +320,22 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
       final file = File('${output.path}/$fileName');
       await file.writeAsBytes(await document.save());
       document.dispose();
+      print('ESC PDF saved at: \'${file.path}\'');
+      print('File exists after save: \'${await file.exists()}\'');
 
       // Add to job attachments
       setState(() {
         widget.job.attachments ??= [];
-        widget.job.attachments!.add(file.path);
+        if (!widget.job.attachments!.contains(file.path)) {
+          widget.job.attachments!.add(file.path);
+        }
       });
 
       // Save job with new attachment
       await _saveJob();
 
+      // Force parent screen to reload job after returning
       if (mounted) {
-        // Auto-return to job details with success indicator
         Navigator.pop(context, true);
       }
     } catch (e) {
@@ -312,24 +353,18 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
   // Save job method with hybrid storage integration
   Future<void> _saveJob() async {
     try {
-      // Save to local file for backward compatibility
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/job_${widget.job.id}.json');
-      await file.writeAsString(jsonEncode(widget.job.toJson()));
-      
-      // Save to cloud using hybrid storage system
-      await FirestoreService.saveJob(widget.job);
-      
-      // Trigger sync through scheduler for optimal cloud sync
-      await SyncScheduler.syncNow(DataType.jobs);
-      
-      setState(() {
-        _hasUnsavedChanges = false;
-      });
-      
+      // Persist the job and update the main jobs index file
+      await widget.job.save();
+
+      // Try to sync to cloud, but ignore errors
+      try {
+        await FirestoreService.saveJob(widget.job);
+        await SyncScheduler.syncNow(DataType.jobs);
+      } catch (e) {
+        print('Cloud sync failed: $e');
+      }
     } catch (e) {
-      print('Error saving job: $e');
-      // Still show success for local save even if cloud fails
+      print('Error saving job locally: $e');
     }
   }
 
@@ -343,9 +378,6 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
 
   /// Mark as having unsaved changes and trigger auto-save
   void _markDirtyAndAutoSave() {
-    setState(() {
-      _hasUnsavedChanges = true;
-    });
     _debouncedSave();
   }
 
@@ -373,6 +405,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
       children: [
         // Reference Number
         TextFormField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _referenceNumberController,
           decoration: const InputDecoration(
             labelText: 'Reference Number',
@@ -384,6 +417,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
 
         // Site Address
         TextFormField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _siteAddressController,
           decoration: const InputDecoration(
             labelText: 'Site Address',
@@ -396,6 +430,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
 
         // Customer Name and Address
         TextFormField(
+          textCapitalization: TextCapitalization.sentences,
           controller: _customerNameAddressController,
           decoration: const InputDecoration(
             labelText: 'Customer Name and Address',
@@ -411,6 +446,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
           children: [
             Expanded(
               child: TextFormField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userNameController,
                 decoration: const InputDecoration(
                   labelText: 'Electrician Name',
@@ -422,6 +458,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
             const SizedBox(width: 16),
             Expanded(
               child: TextFormField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userLicenseController,
                 decoration: const InputDecoration(
                   labelText: 'License Number',
@@ -434,10 +471,22 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         ),
         const SizedBox(height: 16),
 
+        TextFormField(
+          textCapitalization: TextCapitalization.words,
+          controller: _companyNameController,
+          decoration: const InputDecoration(
+            labelText: 'Company Name',
+            prefixIcon: Icon(Icons.business),
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 16),
+
         Row(
           children: [
             Expanded(
               child: TextFormField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userPhoneController,
                 decoration: const InputDecoration(
                   labelText: 'Phone',
@@ -449,6 +498,7 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
             const SizedBox(width: 16),
             Expanded(
               child: TextFormField(
+                textCapitalization: TextCapitalization.sentences,
                 controller: _userEmailController,
                 decoration: const InputDecoration(
                   labelText: 'Email',
@@ -471,7 +521,8 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Details of Work', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text('Details of Work',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             CheckboxListTile(
               title: const Text('Whole Installation'),
@@ -497,15 +548,13 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
     );
   }
 
-
-
   // Helper method to draw check marks for checkboxes
   void _drawCheckMark(PdfGraphics graphics, double x, double y) {
     final pen = PdfPen(PdfColor(0, 0, 0), width: 2);
-    
-    // Draw a simple check mark using lines
-    graphics.drawLine(pen, Offset(x, y + 5), Offset(x + 3, y + 8));
-    graphics.drawLine(pen, Offset(x + 3, y + 8), Offset(x + 8, y));
+
+    // Draw a more centered check mark inside the checkbox area
+    graphics.drawLine(pen, Offset(x + 2, y + 8), Offset(x + 5, y + 12));
+    graphics.drawLine(pen, Offset(x + 5, y + 12), Offset(x + 12, y + 4));
   }
 
   @override
@@ -537,7 +586,8 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
             if (_useExpandedInfoSection) ...[
               // Expanded Information section
               ExpansionTile(
-                title: const Text('Expanded Information', style: TextStyle(fontWeight: FontWeight.bold)),
+                title: const Text('Expanded Information',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 initiallyExpanded: false,
                 children: [
                   const SizedBox(height: 8),
@@ -561,9 +611,12 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Work Description', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Work Description',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 8),
                     TextFormField(
+                      textCapitalization: TextCapitalization.sentences,
                       controller: _workDescriptionController,
                       decoration: const InputDecoration(
                         labelText: 'Describe the electrical work performed',
@@ -585,21 +638,23 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Dates', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Dates',
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 16),
-                    
                     ListTile(
                       leading: const Icon(Icons.calendar_today),
                       title: const Text('Test Date'),
-                      subtitle: Text(DateFormat('dd/MM/yyyy').format(_testDate)),
+                      subtitle:
+                          Text(DateFormat('dd/MM/yyyy').format(_testDate)),
                       onTap: () => _selectDate(context, false),
                       trailing: const Icon(Icons.edit),
                     ),
-                    
                     ListTile(
                       leading: const Icon(Icons.calendar_today),
                       title: const Text('Sign Date'),
-                      subtitle: Text(DateFormat('dd/MM/yyyy').format(_signDate)),
+                      subtitle:
+                          Text(DateFormat('dd/MM/yyyy').format(_signDate)),
                       onTap: () => _selectDate(context, true),
                       trailing: const Icon(Icons.edit),
                     ),
@@ -620,7 +675,8 @@ class _EscFormScreenState extends State<EscFormScreen> with DocumentNamingMixin 
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textStyle: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
               ),
             ),

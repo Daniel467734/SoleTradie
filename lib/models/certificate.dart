@@ -39,8 +39,10 @@ class Certificate {
     required String customerAddress,
     required EstimateVersion estimateVersion,
   }) {
-    // Extract certificate type from invoice number (e.g., "COC-001" -> "COC")
-    final certType = estimateVersion.invoiceNumber?.split('-').first ?? 'Unknown';
+    // Extract certificate type from estimate version type or invoice number
+    final certType = _extractCertificateTypeFromEstimateVersion(estimateVersion) ??
+        estimateVersion.invoiceNumber?.split('-').first ??
+        'Certificate';
     
     return Certificate(
       id: estimateVersion.id ?? '',
@@ -68,6 +70,27 @@ class Certificate {
       default:
         return 'draft';
     }
+  }
+  
+  static String? _extractCertificateTypeFromEstimateVersion(EstimateVersion version) {
+    final type = version.type?.toLowerCase();
+    if (type == null) return null;
+    if (type.contains('gas coc') || type.contains('gas_coc') || (type.contains('gas') && type.contains('coc'))) {
+      return 'Gas COC';
+    }
+    if (type.contains('electrical safety') || type.contains('esc')) {
+      return 'ESC';
+    }
+    if (type.contains('certificate of compliance') || type.contains('coc')) {
+      return 'COC';
+    }
+    if (type.contains('record of inspection') || type.contains('roi')) {
+      return 'ROI';
+    }
+    if (type.contains('certificate')) {
+      return 'Certificate';
+    }
+    return null;
   }
 
   Map<String, dynamic> toJson() => {

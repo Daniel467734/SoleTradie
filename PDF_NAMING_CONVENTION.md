@@ -8,6 +8,11 @@ This document describes the standardized PDF naming convention implemented acros
 [Document Type] [Job Site Address] [Job Number] [(count)].pdf
 ```
 
+For estimates and quotes, the attachment naming now uses a date-based format:
+```
+[YYYY-MM-DD] [Estimate|Quote] [sequence].pdf
+```
+
 ### Components:
 1. **Document Type**: Standardized type name (Invoice, Estimate, Quote, ESC, COC, Gas COC, ROI)
 2. **Job Site Address**: Cleaned job site address (invalid characters removed, length limited)
@@ -19,7 +24,8 @@ This document describes the standardized PDF naming convention implemented acros
 
 ### Single Documents
 - `Invoice 22B Campbell Ave 3664566345.pdf`
-- `Estimate 19A Mamaku Street 44555343.pdf`
+- `2026-07-01 Estimate 1.pdf`
+- `2026-07-01 Quote 1.pdf`
 - `ESC 15 High Street 98765432.pdf`
 - `COC 10 Main Road 11111111.pdf`
 - `Gas COC 5 Queen Street 12345678.pdf`
@@ -27,7 +33,8 @@ This document describes the standardized PDF naming convention implemented acros
 
 ### Multiple Documents (with count)
 - `Invoice 22B Campbell Ave 3664566345 (2).pdf` ← Second invoice for this job
-- `Estimate 19A Mamaku Street 44555343 (3).pdf` ← Third estimate for this job
+- `2026-07-01 Estimate 2.pdf` ← Second estimate for this job or date
+- `2026-07-01 Quote 2.pdf` ← Second quote for this job or date
 - `ESC 15 High Street 98765432 (2).pdf` ← Second ESC for this job
 
 ## Supported Document Types

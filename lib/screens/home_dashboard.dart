@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'settings_screen.dart';
 import '../models/customer.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -36,11 +37,13 @@ class HomeDashboard extends StatefulWidget {
 
 class _HomeDashboardState extends State<HomeDashboard> {
   List<Customer> customers = [];
+  late List<Invoice> _invoices;
 
   @override
   void initState() {
     super.initState();
     _loadCustomers();
+    _invoices = List.from(invoices);
   }
 
   Future<void> _saveCustomers() async {
@@ -95,9 +98,108 @@ class _HomeDashboardState extends State<HomeDashboard> {
     }
   }
 
+  Future<void> _confirmWipeJobData() async {
+    final controller = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Wipe Job Data'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('This will delete all local job, estimate, quote, invoice, and in-progress build data. This cannot be undone.'),
+            const SizedBox(height: 16),
+            const Text('Type DELETE JOB DATA to confirm.'),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Confirmation text',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              if (controller.text.trim() == 'DELETE JOB DATA') {
+                Navigator.pop(context, true);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Please type DELETE JOB DATA exactly to confirm.'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('Confirm Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _wipeJobData();
+    }
+  }
+
+  Future<void> _wipeJobData() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final prefs = await SharedPreferences.getInstance();
+
+      final jobsFile = File('${directory.path}/jobs.json');
+      if (await jobsFile.exists()) {
+        await jobsFile.delete();
+      }
+
+      await for (final entity in directory.list(recursive: false, followLinks: false)) {
+        if (entity is File) {
+          final name = entity.path.split(Platform.pathSeparator).last;
+          if (name.startsWith('job_') && name.endsWith('.json')) {
+            await entity.delete();
+          }
+        }
+      }
+
+      final keys = prefs.getKeys();
+      for (final key in keys) {
+        if (key.startsWith('in_progress_builds_') ||
+            key.startsWith('in_progress_estimate_') ||
+            key == 'estimate_builds' ||
+            key == 'quote_builds' ||
+            key == 'invoice_builds') {
+          await prefs.remove(key);
+        }
+      }
+
+      setState(() {
+        _invoices.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Job, invoice, estimate and in-progress build data wiped.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to wipe job data: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final totalInvoiceDue = calculateTotalInvoiceDue(invoices);
+    final totalInvoiceDue = calculateTotalInvoiceDue(_invoices);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Dashboard')),
@@ -132,9 +234,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
             ),
             Expanded(
               child: ListView.builder(
-                itemCount: invoices.length,
+                itemCount: _invoices.length,
                 itemBuilder: (context, index) {
-                  final invoice = invoices[index];
+                  final invoice = _invoices[index];
                   return ListTile(
                     leading: Icon(
                       invoice.isPaid ? Icons.check_circle : Icons.warning,
@@ -207,9 +309,90 @@ class _HomeDashboardState extends State<HomeDashboard> {
               onPressed: _testWebUrl,
               child: const Text('Test Open Google.com'),
             ),
+            const SizedBox(height: 32),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.delete_forever),
+              label: const Text('Wipe Job/Invoice Data'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: _confirmWipeJobData,
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.person_add),
+              label: const Text('Add Customer'),
+              onPressed: _showAddCustomerDialog,
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _showAddCustomerDialog() async {
+    final nameController = TextEditingController();
+    final addressController = TextEditingController();
+    final emailController = TextEditingController();
+    final phoneController = TextEditingController();
+    final bodyCorporateController = TextEditingController();
+
+    final newCustomer = await showDialog<Customer>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Customer'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: nameController,
+              decoration: const InputDecoration(labelText: 'Name'),
+            ),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: addressController,
+              decoration: const InputDecoration(labelText: 'Address'),
+            ),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: emailController,
+              decoration: const InputDecoration(labelText: 'Email'),
+            ),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: phoneController,
+              decoration: const InputDecoration(labelText: 'Phone'),
+            ),
+            TextField(textCapitalization: TextCapitalization.sentences, 
+              controller: bodyCorporateController,
+              decoration: const InputDecoration(labelText: 'Body Corporate Number (Optional)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (nameController.text.trim().isEmpty) return;
+              Navigator.pop(
+                context,
+                Customer(
+                  id: DateTime.now().millisecondsSinceEpoch.toString(),
+                  name: nameController.text.trim(),
+                  companyName: '',
+                  address: addressController.text.trim(),
+                  email: emailController.text.trim(),
+                  phone: phoneController.text.trim(),
+                  bodyCorporateNumber: bodyCorporateController.text.trim(),
+                ),
+              );
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (newCustomer != null) {
+      _addCustomer(newCustomer);
+    }
   }
 }
