@@ -4,7 +4,8 @@ import 'package:http/http.dart' as http;
 /// OpenAI API key, injected at build/run time via:
 ///   flutter run --dart-define=OPENAI_API_KEY=sk-...
 /// Never hardcode the real key here - this file is committed to git.
-const String _openAiApiKey = String.fromEnvironment('OPENAI_API_KEY');
+const String openAiApiKey = String.fromEnvironment('OPENAI_API_KEY');
+const String _openAiApiKey = openAiApiKey;
 
 /// Abstract base class for PDF receipt templates
 abstract class PdfReceiptTemplate {

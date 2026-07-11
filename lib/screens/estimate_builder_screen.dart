@@ -19,6 +19,7 @@ import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/address_search_service.dart';
+import '../templates/pdf_receipt_templates.dart' show openAiApiKey;
 import '../services/memory_optimization_service.dart';
 import '../models/estimate_template.dart';
 import '../models/estimate_item.dart' as estimate_item;
@@ -3128,8 +3129,7 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
   }
 
   Future<dynamic> _analyzeReceiptText(String text) async {
-    const apiKey =
-        'REDACTED_OPENAI_KEY';
+    const apiKey = openAiApiKey;
     final prompt = '''
 You are reading a JA Russell invoice. Extract all line items as a JSON array.
 For each item, return:
@@ -3288,8 +3288,7 @@ Now extract from this invoice text:
 ''';
     }
 
-    const apiKey =
-        'REDACTED_OPENAI_KEY';
+    const apiKey = openAiApiKey;
     final fullPrompt = templatePrompt.replaceAll(r'$text', text);
 
     _showAiProgressDialog('Sending receipt data to AI...');
