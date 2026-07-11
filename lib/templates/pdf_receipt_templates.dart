@@ -1,6 +1,11 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+/// OpenAI API key, injected at build/run time via:
+///   flutter run --dart-define=OPENAI_API_KEY=sk-...
+/// Never hardcode the real key here - this file is committed to git.
+const String _openAiApiKey = String.fromEnvironment('OPENAI_API_KEY');
+
 /// Abstract base class for PDF receipt templates
 abstract class PdfReceiptTemplate {
   String get name;
@@ -20,7 +25,7 @@ class JARussellTemplate extends PdfReceiptTemplate {
   
   @override
   Future<dynamic> analyzeReceiptText(String text) async {
-    const apiKey = 'REDACTED_OPENAI_KEY';
+    const apiKey = _openAiApiKey;
     final prompt = '''
 You are reading a JA Russell invoice. Extract all line items as a JSON array.
 For each item, return:
@@ -95,7 +100,7 @@ class BunningsTemplate extends PdfReceiptTemplate {
   @override
   Future<dynamic> analyzeReceiptText(String text) async {
     // TODO: Implement Bunnings-specific parsing logic
-    const apiKey = 'REDACTED_OPENAI_KEY';
+    const apiKey = _openAiApiKey;
     final prompt = '''
 You are reading a Bunnings Warehouse receipt. Extract all line items as a JSON array.
 For each item, return:
@@ -149,7 +154,7 @@ class Mitre10Template extends PdfReceiptTemplate {
   
   @override
   Future<dynamic> analyzeReceiptText(String text) async {
-    const apiKey = 'REDACTED_OPENAI_KEY';
+    const apiKey = _openAiApiKey;
     final prompt = '''
 You are reading a Mitre 10 receipt. Extract all line items as a JSON array.
 For each item, return:
