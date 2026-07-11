@@ -5,8 +5,7 @@ import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import '../services/firestore_service.dart';
-import '../models/price_book_item.dart' as models;
+import '../services/pricebook_cloud_sync_service.dart';
 import 'pricebook_csv_import_screen.dart';
 
 enum PriceBookKind {
@@ -1163,51 +1162,92 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
     }
   }
 
-  /// SMART CLOUD SYNC: Only sync items that have actually changed
+  /// WHOLE-FILE CLOUD SYNC: uploads the entire price book as a single
+  /// JSON file to Firebase Storage, instead of writing one Firestore
+  /// document per item (the previous approach, `batchSavePriceBookItems`
+  /// in firestore_service.dart, became unreliable at ~50,000 items - see
+  /// pricebook_cloud_sync_service.dart for the full rationale). This is
+  /// a "last write wins" backup of the whole list, not a granular
+  /// per-item merge, which is an intentional simplification at this
+  /// scale.
   Future<void> _syncChangedItemsToFirestore() async {
     try {
-      print('🔍 Starting smart cloud sync...');
-      
-      // Find ONLY items that need syncing (modified since last sync)
-      final itemsToSync = priceBook.where((item) => item.hasBeenModified).toList();
-      
-      if (itemsToSync.isEmpty) {
-        print('✅ No items need syncing - all up to date');
+      print('🔍 Starting whole-file cloud sync...');
+
+      if (priceBook.isEmpty) {
+        print('✅ Price book is empty - nothing to sync');
         return;
       }
-      
-      print('📤 Found ${itemsToSync.length} items that need syncing (out of ${priceBook.length} total)');
-      
-      // Safety check - don't sync massive amounts at once
-      if (itemsToSync.length > 1000) {
-        throw Exception('Too many items to sync (${itemsToSync.length}). Use Force Cloud Sync or reduce dataset size.');
-      }
-      
-      // Convert screen PriceBookItem to models PriceBookItem for Firestore
-      final items = itemsToSync.map((screenItem) => models.PriceBookItem(
-        code: screenItem.code,
-        name: screenItem.name,
-        category: screenItem.groupCode,
-        purchasePrice: screenItem.purchasePrice,
-        salePrice: screenItem.price,
-        unit: screenItem.unit,
-        description: '',
-      )).toList();
-      
-      print('🚀 Syncing ${items.length} changed items to Firestore...');
-      await FirestoreService.batchSavePriceBookItems(items);
-      
-      // Mark items as synced (clear the modified flag)
-      for (final item in itemsToSync) {
+
+      final itemsJson = priceBook.map((item) => item.toJson()).toList();
+
+      print('🚀 Uploading ${itemsJson.length} items as a single file to Firebase Storage...');
+      await PriceBookCloudSyncService.uploadPriceBook(itemsJson);
+
+      // Mark every item as synced now that the whole file (which
+      // includes every item, not just the previously-modified ones) has
+      // been uploaded.
+      for (final item in priceBook) {
         item.markAsSynced(null);
       }
-      
-      print('✅ Successfully synced ${items.length} changed items to Firestore');
+
+      print('✅ Successfully uploaded whole price book (${itemsJson.length} items) to cloud');
     } catch (e) {
-      print('❌ Error in smart cloud sync: $e');
+      print('❌ Error in whole-file cloud sync: $e');
       rethrow;
     }
   }
+
+  /// Restores the price book from the whole-file cloud backup (Firebase
+  /// Storage), overwriting the current in-memory + local list. Mirrors
+  /// `_restoreFromBackup()` (which restores from the local backup file)
+  /// but pulls from the cloud copy instead.
+  Future<void> _restoreFromCloudBackup() async {
+    try {
+      final itemsJson = await PriceBookCloudSyncService.downloadPriceBook();
+      if (itemsJson.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No cloud backup found for the price book yet.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      final restoredItems =
+          itemsJson.map((json) => PriceBookItem.fromJson(json)).toList();
+
+      setState(() {
+        priceBook
+          ..clear()
+          ..addAll(restoredItems);
+      });
+      await _saveToLocalFile();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Restored ${restoredItems.length} items from cloud backup.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Failed to restore price book from cloud: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore cloud backup: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
 
   Future<void> _scanBarcodeAndSearch() async {
     if (_isBarcodeProcessing) return; // Prevent re-entry
@@ -1730,91 +1770,116 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
             ),
             Stack(
               children: [
-                IconButton(
+                GestureDetector(
+                  onLongPress: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('☁️ Restore from Cloud'),
+                        content: const Text(
+                          'This will replace your current price book with '
+                          'the last cloud backup. Any local changes made '
+                          'since that backup will be lost. Continue?',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style:
+                                TextButton.styleFrom(foregroundColor: Colors.red),
+                            child: const Text('Restore'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm == true) {
+                      await _restoreFromCloudBackup();
+                    }
+                  },
+                  child: IconButton(
                   icon: const Icon(Icons.cloud_upload),
-                  tooltip: 'Smart Cloud Sync',
+                  tooltip: 'Cloud Sync (upload whole price book) — long-press to restore from cloud',
                   onPressed: () async {
-                    final itemsToSync = priceBook.where((item) => item.hasBeenModified).toList();
-                    
-                    if (itemsToSync.isEmpty) {
+                    if (priceBook.isEmpty) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('✅ All items are already synced to cloud!'),
-                          backgroundColor: Colors.green,
+                        const SnackBar(
+                          content: Text('Price book is empty - nothing to sync.'),
                         ),
                       );
                       return;
                     }
-                    
-                    // Show warning for large datasets only
-                    if (itemsToSync.length > 200) {
+
+                    // Warn for large datasets since this uploads the
+                    // whole file in one go (no per-item limit like the
+                    // old Firestore approach, but still worth confirming
+                    // for very large lists on a metered connection).
+                    if (priceBook.length > 5000) {
                       final confirm = await showDialog<bool>(
                         context: context,
                         builder: (context) => AlertDialog(
-                          title: Text('⚡ Smart Cloud Sync'),
+                          title: const Text('☁️ Cloud Sync'),
                           content: Text(
-                            'Found ${itemsToSync.length} changed items to sync.\n\n'
-                            'This will only sync items that have been modified (not all ${priceBook.length} items).\n\n'
-                            'Continue with smart sync?'
+                            'This will upload all ${priceBook.length} price book items '
+                            'as a single file to the cloud (replacing any previous cloud backup).\n\n'
+                            'Continue?',
                           ),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.pop(context, false),
-                              child: Text('Cancel'),
+                              child: const Text('Cancel'),
                             ),
                             TextButton(
                               onPressed: () => Navigator.pop(context, true),
-                              style: TextButton.styleFrom(foregroundColor: Colors.blue),
-                              child: Text('Smart Sync'),
+                              style:
+                                  TextButton.styleFrom(foregroundColor: Colors.blue),
+                              child: const Text('Upload'),
                             ),
                           ],
                         ),
                       );
                       if (confirm != true) return;
                     }
-                    
+
                     try {
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('⚡ Smart syncing ${itemsToSync.length} changed items...'),
-                            duration: Duration(seconds: 2),
+                            content:
+                                Text('☁️ Uploading ${priceBook.length} items to cloud...'),
+                            duration: const Duration(seconds: 2),
                           ),
                         );
                       }
-                      
-                      // Force sync by calling the smart sync method directly
+
                       await _syncChangedItemsToFirestore();
-                      
+
                       if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('✅ Successfully synced ${itemsToSync.length} items to cloud!'),
+                            content: Text(
+                                '✅ Successfully uploaded ${priceBook.length} items to cloud!'),
                             backgroundColor: Colors.green,
-                            duration: Duration(seconds: 3),
+                            duration: const Duration(seconds: 3),
                           ),
                         );
                       }
                     } catch (e) {
-                      print('Smart sync failed: $e');
+                      print('Cloud sync failed: $e');
                       if (mounted) {
-                        String message = '❌ Smart sync failed';
-                        if (e.toString().contains('RESOURCE_EXHAUSTED')) {
-                          message = '❌ Smart sync failed: Firebase quota exceeded';
-                        } else if (e.toString().contains('too large')) {
-                          message = '❌ Dataset too large for sync';
-                        }
-                        
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text(message),
+                            content: Text('❌ Cloud sync failed: $e'),
                             backgroundColor: Colors.red,
-                            duration: Duration(seconds: 5),
+                            duration: const Duration(seconds: 5),
                           ),
                         );
                       }
                     }
                   },
+                  ),
                 ),
                 // Show badge with number of items needing sync
                 if (priceBook.where((item) => item.hasBeenModified).isNotEmpty)

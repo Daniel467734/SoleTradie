@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "xeroSyncRecords",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "xeroInvoiceId", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

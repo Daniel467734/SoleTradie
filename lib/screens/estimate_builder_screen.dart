@@ -80,6 +80,11 @@ class ConversionPriceChange {
   final double oldSellPrice;
   final double newSellPrice;
   bool selected;
+  // True when this item's sell price was hand-edited by the user rather
+  // than pricebook-derived. Such items are shown informationally in the
+  // conversion dialog (buy price change only) but are never selectable for
+  // a sell-price update - their manually-set price is always preserved.
+  final bool sellPriceLocked;
 
   ConversionPriceChange({
     required this.item,
@@ -88,9 +93,11 @@ class ConversionPriceChange {
     required this.oldSellPrice,
     required this.newSellPrice,
     this.selected = false,
+    this.sellPriceLocked = false,
   });
 
-  bool get sellPriceWouldChange => (newSellPrice - oldSellPrice).abs() >= 0.005;
+  bool get sellPriceWouldChange =>
+      !sellPriceLocked && (newSellPrice - oldSellPrice).abs() >= 0.005;
 }
 
 // --- Helper methods (add these near the top or bottom of your file) ---
@@ -894,7 +901,13 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
     final price = parsed != null ? parsed : item.unitPrice;
     ctrl.text = price.toStringAsFixed(2);
     if (price != item.unitPrice) {
-      final newItem = item.copyWith(unitPrice: price);
+      // The user has hand-typed a sell price here, distinct from the
+      // pricebook-derived price. Flag it so a later estimate->invoice
+      // conversion's "Purchase Prices Have Changed" dialog leaves this
+      // item's sell price alone (informational only if its buy price also
+      // changed) instead of offering to overwrite it.
+      final newItem =
+          item.copyWith(unitPrice: price, sellPriceManuallyEdited: true);
       _updateItemFast(item, newItem);
     }
     if (save) {
@@ -2092,6 +2105,7 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
         newPurchasePrice: newPurchasePrice,
         oldSellPrice: item.unitPrice,
         newSellPrice: newSellPrice > 0 ? newSellPrice : item.unitPrice,
+        sellPriceLocked: item.sellPriceManuallyEdited,
       ));
     }
 
@@ -2106,11 +2120,14 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
       _updateItemFast(change.item, updatedItem);
     }
 
-    // Only bother showing the dialog for items where syncing the buy price
-    // would actually also change the sell price - if every affected item's
-    // sell price stays the same, there's nothing for the user to decide.
-    final sellPriceChanges =
-        changes.where((c) => c.sellPriceWouldChange).toList();
+    // Show the dialog for any item where syncing the buy price would also
+    // change the sell price (the normal case), OR where the item's sell
+    // price is locked (manually edited) but its buy price still changed -
+    // shown informationally in that case so the user knows the buy price
+    // moved, even though the sell price itself can't be touched.
+    final sellPriceChanges = changes
+        .where((c) => c.sellPriceWouldChange || c.sellPriceLocked)
+        .toList();
     if (sellPriceChanges.isEmpty || !mounted) return;
 
     await _showConversionPriceChangeDialog(sellPriceChanges);
@@ -2129,8 +2146,14 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (dialogContext, setDialogState) {
-            final anySelected = changes.any((c) => c.selected);
-            final allSelected = changes.every((c) => c.selected);
+            // Locked (manually-priced) items are informational only - they
+            // never count toward "selected"/"all selected"/"Select All"/
+            // "Change All" since their sell price can't be changed here.
+            final selectableChanges =
+                changes.where((c) => !c.sellPriceLocked).toList();
+            final anySelected = selectableChanges.any((c) => c.selected);
+            final allSelected = selectableChanges.isNotEmpty &&
+                selectableChanges.every((c) => c.selected);
 
             return AlertDialog(
               title: const Text('Purchase Prices Have Changed'),
@@ -2145,7 +2168,8 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
                       'updated automatically. Tick any items where you also '
                       'want to update the sell price to match the new '
                       'pricing, or leave unticked to keep the original sell '
-                      'price.',
+                      'price. Items with a manually-set sell price are '
+                      'shown for reference only and are never changed here.',
                       style: TextStyle(fontSize: 13, color: Colors.black87),
                     ),
                     const SizedBox(height: 12),
@@ -2156,6 +2180,37 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (context, index) {
                           final change = changes[index];
+                          if (change.sellPriceLocked) {
+                            return ListTile(
+                              leading: const Icon(Icons.lock_outline,
+                                  color: Colors.black45),
+                              title: Text(
+                                change.item.name.isNotEmpty
+                                    ? change.item.name
+                                    : change.item.description,
+                                style:
+                                    const TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Buy: \$${change.oldPurchasePrice.toStringAsFixed(2)} → \$${change.newPurchasePrice.toStringAsFixed(2)}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  const Text(
+                                    'Sell price manually set - kept as-is.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontStyle: FontStyle.italic,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              dense: true,
+                            );
+                          }
                           return CheckboxListTile(
                             value: change.selected,
                             onChanged: (value) {
@@ -2216,26 +2271,29 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
                   onPressed: () => Navigator.pop(dialogContext),
                   child: const Text('Keep Same'),
                 ),
-                TextButton(
-                  onPressed: () {
-                    setDialogState(() {
-                      for (final change in changes) {
-                        change.selected = true;
-                      }
-                    });
-                  },
-                  child: const Text('Select All'),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    _applySelectedConversionSellPriceChanges(
-                        anySelected ? changes.where((c) => c.selected).toList() : changes);
-                    Navigator.pop(dialogContext);
-                  },
-                  child: Text(anySelected
-                      ? (allSelected ? 'Change All' : 'Change Selected')
-                      : 'Change All'),
-                ),
+                if (selectableChanges.isNotEmpty)
+                  TextButton(
+                    onPressed: () {
+                      setDialogState(() {
+                        for (final change in selectableChanges) {
+                          change.selected = true;
+                        }
+                      });
+                    },
+                    child: const Text('Select All'),
+                  ),
+                if (selectableChanges.isNotEmpty)
+                  ElevatedButton(
+                    onPressed: () {
+                      _applySelectedConversionSellPriceChanges(anySelected
+                          ? selectableChanges.where((c) => c.selected).toList()
+                          : selectableChanges);
+                      Navigator.pop(dialogContext);
+                    },
+                    child: Text(anySelected
+                        ? (allSelected ? 'Change All' : 'Change Selected')
+                        : 'Change All'),
+                  ),
               ],
             );
           },

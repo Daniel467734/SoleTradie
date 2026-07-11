@@ -21,6 +21,7 @@ import '../services/firestore_service.dart';
 import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart';
 import '../services/in_progress_build_service.dart';
+import '../services/xero_invoice_repository_impl.dart';
 import '../models/in_progress_build.dart';
 import 'coc_form_screen.dart' as coc_form;
 import 'esc_form_screen.dart' as esc_form;
@@ -447,6 +448,13 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
       // Trigger sync through scheduler for optimal cloud sync
       await SyncScheduler.syncNow(DataType.jobs);
+
+      // Keep Xero in sync: push any invoices that haven't been synced
+      // yet (or re-push updates for already-synced ones). This is
+      // idempotent and safe to call on every save.
+      for (final invoice in widget.job.invoices) {
+        unawaited(_pushXeroInvoiceForInvoice(invoice));
+      }
     } catch (e) {
       // Still show success for local save
     }
@@ -458,6 +466,59 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
     _saveDebounce = Timer(const Duration(seconds: 30), () {
       _saveJob();
     });
+  }
+
+  /// Pushes (creates/updates) the given invoice to Xero so a duplicate
+  /// invoice exists there with matching customer, invoice number, line
+  /// items and total. Safe to call repeatedly - the repository is
+  /// idempotent and will update the existing Xero invoice rather than
+  /// creating a new one on retries.
+  Future<void> _pushXeroInvoiceForInvoice(dynamic invoice) async {
+    try {
+      final repository = XeroInvoiceRepositoryImpl();
+      await repository.pushInvoice(
+        job: widget.job,
+        invoice: invoice,
+        localInvoiceNumber: invoice.invoiceNumber ?? invoice.id ?? '',
+      );
+    } catch (e) {
+      debugPrint('Xero invoice push failed: $e');
+    }
+  }
+
+  /// Pushes a Payment to Xero for an invoice that was just marked paid
+  /// locally, so both ledgers stay reconciled without double entry.
+  Future<void> _pushXeroPaymentForInvoice(dynamic invoice) async {
+    try {
+      final repository = XeroInvoiceRepositoryImpl();
+      // Ensure the invoice exists in Xero first (in case it was marked
+      // paid before ever being pushed), then push the payment.
+      await repository.pushInvoice(
+        job: widget.job,
+        invoice: invoice,
+        localInvoiceNumber: invoice.invoiceNumber ?? invoice.id ?? '',
+      );
+      await repository.pushPayment(
+        localInvoiceId: invoice.id,
+        amountPaid: invoice.amount ?? invoice.total,
+      );
+    } catch (e) {
+      debugPrint('Xero payment push failed: $e');
+    }
+  }
+
+  /// Voids the linked Xero invoice when an invoice is voided, archived,
+  /// or deleted locally, so a stale AUTHORISED invoice isn't left
+  /// sitting in Xero after the local copy is gone. Safe/idempotent to
+  /// call repeatedly - if there's no linked Xero invoice yet (or it's
+  /// already voided) this is a no-op.
+  Future<void> _pushXeroVoidForInvoice(dynamic invoice) async {
+    try {
+      final repository = XeroInvoiceRepositoryImpl();
+      await repository.pushVoid(localInvoiceId: invoice.id);
+    } catch (e) {
+      debugPrint('Xero invoice void push failed: $e');
+    }
   }
 
   /// Mark as having unsaved changes and trigger auto-save
@@ -1514,6 +1575,14 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
     if (confirmed != true) return;
 
+    // Void any Xero-synced invoices before deleting the job locally, so
+    // they don't linger AUTHORISED in Xero with no corresponding job on
+    // this side. Fire-and-forget per invoice - deletion should not be
+    // blocked by network/Xero availability.
+    for (final invoice in widget.job.invoices) {
+      unawaited(_pushXeroVoidForInvoice(invoice));
+    }
+
     try {
       await _deleteJobFiles();
       await FirestoreService.deleteJob(widget.job.id);
@@ -1632,11 +1701,19 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
       case 'paid':
         invoice.isPaid = true;
         await _saveJob();
+        // Fire-and-forget: push a Payment to Xero so the two ledgers
+        // stay reconciled. Local state has already been updated above
+        // so the UI stays instant regardless of network conditions.
+        unawaited(_pushXeroPaymentForInvoice(invoice));
         break;
       case 'void':
       case 'archive':
         invoice.isArchived = true;
         await _saveJob();
+        // Fire-and-forget: void the linked Xero invoice too, so a
+        // stale AUTHORISED invoice doesn't linger there after it's
+        // been voided/archived locally.
+        unawaited(_pushXeroVoidForInvoice(invoice));
         break;
       case 'due':
         final newDate = await showDatePicker(

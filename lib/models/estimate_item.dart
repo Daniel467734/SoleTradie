@@ -25,6 +25,18 @@ class EstimateItem {
   final String section;
   final double? discountAmount;   // <-- Add this
   final double? discountPercent;  // <-- Add this
+  // True once the user has manually typed/changed this line's sell price
+  // (unitPrice) directly in the builder, as opposed to it being derived
+  // from the pricebook (template load, initial add, or the conversion
+  // price-change dialog). Used by the estimate->invoice conversion flow to
+  // keep a manually-set sell price untouched: such items are excluded from
+  // the selectable "update sell price?" list in the "Purchase Prices Have
+  // Changed" dialog, even if their buy price has changed. It is never
+  // reset back to false automatically - once a user hand-edits a price,
+  // that item is considered manually priced for the rest of its lifetime
+  // as a line item (a fresh pricebook-derived line, e.g. re-added from a
+  // template, starts out false again).
+  final bool sellPriceManuallyEdited;
 
   EstimateItem({
     required this.name,
@@ -36,6 +48,7 @@ class EstimateItem {
     required this.section,
     this.discountAmount,   // <-- Add this
     this.discountPercent,  // <-- Add this
+    this.sellPriceManuallyEdited = false,
   });
 
   double get total => unitPrice * quantity;
@@ -50,6 +63,7 @@ class EstimateItem {
     String? section,
     double? discountAmount,   // <-- Add this
     double? discountPercent,  // <-- Add this
+    bool? sellPriceManuallyEdited,
   }) {
     return EstimateItem(
       name: name ?? this.name,
@@ -62,6 +76,8 @@ class EstimateItem {
       section: section ?? this.section,
       discountAmount: discountAmount ?? this.discountAmount,     // <-- Add this
       discountPercent: discountPercent ?? this.discountPercent,  // <-- Add this
+      sellPriceManuallyEdited:
+          sellPriceManuallyEdited ?? this.sellPriceManuallyEdited,
     );
   }
 
@@ -75,6 +91,7 @@ class EstimateItem {
     'section': section,
     'discountAmount': discountAmount,     // <-- Add this
     'discountPercent': discountPercent,   // <-- Add this
+    'sellPriceManuallyEdited': sellPriceManuallyEdited,
   };
 
   factory EstimateItem.fromJson(Map<String, dynamic> json) => EstimateItem(
@@ -89,6 +106,7 @@ class EstimateItem {
     section: json['section'],
     discountAmount: json['discountAmount'] != null ? (json['discountAmount'] as num).toDouble() : null,     // <-- Add this
     discountPercent: json['discountPercent'] != null ? (json['discountPercent'] as num).toDouble() : null,  // <-- Add this
+    sellPriceManuallyEdited: json['sellPriceManuallyEdited'] == true,
   );
 }
 

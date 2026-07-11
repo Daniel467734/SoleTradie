@@ -6,9 +6,11 @@ list(APPEND FLUTTER_PLUGIN_LIST
   amplify_db_common
   cloud_firestore
   connectivity_plus
+  desktop_webview_window
   file_selector_windows
   firebase_auth
   firebase_core
+  firebase_storage
   geolocator_windows
   isar_flutter_libs
   permission_handler_windows
@@ -17,6 +19,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   speech_to_text_windows
   url_launcher_windows
   webview_windows
+  window_to_front
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

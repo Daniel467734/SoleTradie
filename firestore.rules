@@ -1,0 +1,16 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Existing app rules should already scope users/{uid}/** to that
+    // user only - this file is a placeholder if one doesn't already
+    // exist in the project. If your project already deploys Firestore
+    // rules from elsewhere, merge the xeroSyncRecords/settings rules
+    // below into that file instead of using this one, and remove the
+    // "firestore.rules" entry from firebase.json to avoid overwriting
+    // your existing rules on deploy.
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

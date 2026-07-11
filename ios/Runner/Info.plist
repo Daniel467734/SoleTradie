@@ -49,5 +49,16 @@
 	<string>This app needs microphone access to enable voice input for certificate notes.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>This app needs speech recognition to convert voice input to text for certificate notes.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.soletradie.xero.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>soletradie</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -41,6 +41,8 @@ dependencies:
   oauth2: ^2.0.2
   crypto: ^3.0.3
   json_annotation: ^4.8.1
+  # In-app browser OAuth redirect capture (Xero OAuth2 login flow)
+  flutter_web_auth_2: ^4.1.0
 
 
 
@@ -54,6 +56,13 @@ dependencies:
   
   # Firestore for cloud sync
   cloud_firestore: ^5.6.12
+
+  # Firebase Storage - used for the price book cloud backup as a single
+  # JSON blob (see lib/services/pricebook_cloud_sync_service.dart).
+  # Firestore documents cap out at 1MiB and it also isn't designed for
+  # 50k-item collections (per-item docs previously caused sync issues at
+  # that scale), so a single Storage object is used instead.
+  firebase_storage: ^12.3.7
   
   # Connectivity checking
   connectivity_plus: ^6.0.5

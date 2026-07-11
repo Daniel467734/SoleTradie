@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// Storage rules for the price book whole-file cloud backup (see
+// lib/services/pricebook_cloud_sync_service.dart). Scopes each user to
+// their own price_book.json object only, mirroring the same
+// users/{uid}/** scoping already used in firestore.rules.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/price_book/{fileName} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

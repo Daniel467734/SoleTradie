@@ -13,6 +13,7 @@ import 'package:mailer/smtp_server.dart';
 import 'package:geocoding/geocoding.dart';
 import '../services/myob_service.dart';
 import '../services/xero_service.dart';
+import '../services/xero_invoice_repository_impl.dart';
 import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart' show DataType;
 import 'data_management_screen.dart';
@@ -62,6 +63,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _xeroTenantId;
   String? _xeroAccessToken;
   String? _xeroRefreshToken;
+  String? _xeroBankAccountCode;
+  String? _xeroSalesAccountCode;
+  List<Map<String, dynamic>> _xeroBankAccountOptions = [];
+  List<Map<String, dynamic>> _xeroSalesAccountOptions = [];
   
   // Personal Settings
   final _firstNameController = TextEditingController();
@@ -88,7 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadSettings().then((_) => _loadXeroAccountOptions());
     _loadColor();
   }
 
@@ -121,6 +126,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _xeroTenantId = prefs.getString('xero_tenant_id');
       _xeroAccessToken = prefs.getString('xero_access_token');
       _xeroRefreshToken = prefs.getString('xero_refresh_token');
+      _xeroBankAccountCode = prefs.getString('xero_bank_account_code');
+      _xeroSalesAccountCode = prefs.getString('xero_sales_account_code');
       
       // Personal Settings
       _firstNameController.text = prefs.getString('first_name') ?? '';
@@ -215,6 +222,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     if (_xeroRefreshToken != null) {
       await prefs.setString('xero_refresh_token', _xeroRefreshToken!);
+    }
+    if (_xeroBankAccountCode != null) {
+      await prefs.setString('xero_bank_account_code', _xeroBankAccountCode!);
+    }
+    if (_xeroSalesAccountCode != null) {
+      await prefs.setString('xero_sales_account_code', _xeroSalesAccountCode!);
     }
     
     // Personal Settings
@@ -1007,44 +1020,7 @@ Many Thanks
       return;
     }
 
-    // Show instructions dialog for OAuth flow
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Xero OAuth Setup'),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('For full Xero integration, you need to:'),
-            SizedBox(height: 8),
-            Text('1. Visit developer.xero.com'),
-            Text('2. Create a new app with your credentials'),
-            Text('3. Set redirect URI to: https://localhost:8080/callback'),
-            Text('4. Complete OAuth authorization in browser'),
-            SizedBox(height: 16),
-            Text('For now, we\'ll simulate the connection.'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _simulateXeroConnection();
-            },
-            child: const Text('Simulate Connection'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _simulateXeroConnection() async {
-    // Show loading dialog
+    // Show loading dialog while the OAuth browser flow runs.
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1053,39 +1029,77 @@ Many Thanks
           children: [
             CircularProgressIndicator(),
             SizedBox(width: 16),
-            Text('Connecting to Xero...'),
+            Expanded(
+                child: Text(
+                    'Sign in to Xero in the browser window that just opened...')),
           ],
         ),
       ),
     );
 
     try {
-      // Simulate successful OAuth flow
-      await Future.delayed(const Duration(seconds: 2));
-      
+      final xeroService = XeroService();
+      await xeroService.connect(
+        clientId: _xeroClientIdController.text.trim(),
+        clientSecret: _xeroClientSecretController.text.trim(),
+      );
+
+      final stored = await XeroService.getStoredCredentials();
+
+      if (mounted) Navigator.pop(context); // Close loading dialog
+
       setState(() {
-        _xeroTenantId = 'demo-tenant-${DateTime.now().millisecondsSinceEpoch}';
-        _xeroAccessToken = 'demo-access-token-${DateTime.now().millisecondsSinceEpoch}';
-        _xeroRefreshToken = 'demo-refresh-token-${DateTime.now().millisecondsSinceEpoch}';
+        _xeroTenantId = stored['tenantId'];
+        _xeroAccessToken = stored['accessToken'];
+        _xeroRefreshToken = stored['refreshToken'];
       });
-      
-      Navigator.pop(context); // Close loading dialog
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Successfully connected to Xero! (Demo Mode)'),
-          backgroundColor: Colors.green,
-        ),
-      );
+
+      await _loadXeroAccountOptions();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Successfully connected to Xero!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } catch (e) {
-      Navigator.pop(context); // Close loading dialog
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Xero connection failed: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) Navigator.pop(context); // Close loading dialog
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Xero connection failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Loads the Chart of Accounts (via the repository's cache) and splits
+  /// it into bank accounts (for payment reconciliation) and revenue/sales
+  /// accounts (for invoice line item account codes), so the user can map
+  /// which Xero account each should use.
+  Future<void> _loadXeroAccountOptions() async {
+    if (_xeroAccessToken == null) return;
+    try {
+      final repository = XeroInvoiceRepositoryImpl();
+      final accounts = await repository.getAccounts();
+      if (!mounted) return;
+      setState(() {
+        _xeroBankAccountOptions = accounts
+            .where((a) => a.type == 'BANK')
+            .map((a) => {'code': a.code, 'name': a.name})
+            .toList();
+        _xeroSalesAccountOptions = accounts
+            .where((a) => a.type == 'REVENUE' || a.type == 'SALES')
+            .map((a) => {'code': a.code, 'name': a.name})
+            .toList();
+      });
+    } catch (e) {
+      debugPrint('Failed to load Xero accounts: $e');
     }
   }
 
@@ -1975,6 +1989,64 @@ Many Thanks
                           ],
                         ),
                       ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: _xeroBankAccountOptions.any(
+                                (a) => a['code'] == _xeroBankAccountCode)
+                            ? _xeroBankAccountCode
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: 'Bank account for payments',
+                          helperText:
+                              'Used when a marked-paid invoice is pushed to Xero as a Payment.',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        items: _xeroBankAccountOptions
+                            .map((a) => DropdownMenuItem<String>(
+                                  value: a['code'] as String,
+                                  child: Text('${a['name']} (${a['code']})'),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          setState(() => _xeroBankAccountCode = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: _xeroSalesAccountOptions.any(
+                                (a) => a['code'] == _xeroSalesAccountCode)
+                            ? _xeroSalesAccountCode
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: 'Sales account for invoice line items',
+                          helperText:
+                              'Xero AccountCode used for each invoice line item pushed from this app.',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        items: _xeroSalesAccountOptions
+                            .map((a) => DropdownMenuItem<String>(
+                                  value: a['code'] as String,
+                                  child: Text('${a['name']} (${a['code']})'),
+                                ))
+                            .toList(),
+                        onChanged: (value) {
+                          setState(() => _xeroSalesAccountCode = value);
+                        },
+                      ),
+                      if (_xeroBankAccountOptions.isEmpty &&
+                          _xeroSalesAccountOptions.isEmpty) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Load accounts from Xero'),
+                            onPressed: _loadXeroAccountOptions,
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ],
