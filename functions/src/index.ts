@@ -256,7 +256,14 @@ async function reconcileInvoiceEvent(event: XeroWebhookEvent): Promise<boolean> 
  * secret (see README.md in this folder for the exact commands).
  */
 export const xeroWebhook = onRequest(
-  { secrets: [XERO_WEBHOOK_KEY], region: "australia-southeast1" },
+  {
+    secrets: [XERO_WEBHOOK_KEY],
+    region: "australia-southeast1",
+    // Xero's servers call this endpoint directly with no Google auth
+    // credentials, so it must allow unauthenticated invocations (the
+    // HMAC signature check below is what actually secures it).
+    invoker: "public",
+  },
   async (req, res) => {
     const rawBody: Buffer = (req as unknown as { rawBody: Buffer }).rawBody;
     const signature = req.header("x-xero-signature");
