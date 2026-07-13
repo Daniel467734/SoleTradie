@@ -114,7 +114,10 @@ class Job {
   }
 
   JobStatus currentStatus;
-  final DateTime? created;
+  /// When this job was created. Always guaranteed to be non-null (defaults
+  /// to "now" if not provided) so that Firestore's orderBy('created') query
+  /// never silently excludes a job document for missing this field.
+  final DateTime created;
   final DateTime? dueDate;
   final String? jobType;
   List<EstimateItem> estimateItems;
@@ -140,7 +143,7 @@ class Job {
     this.address,
     this.orderNumber,
     JobStatus? status,
-    this.created,
+    DateTime? created,
     this.dueDate,
     this.jobType,
     List<EstimateItem>? estimateItems,
@@ -155,6 +158,7 @@ class Job {
     this.scheduleDates,
     this.isFlexibleDayJob = false,
   })  : currentStatus = status ?? JobStatus.active,
+        created = created ?? DateTime.now(),
         estimateItems = estimateItems ?? [],
         estimateVersions = estimateVersions ?? [],
         invoices = invoices ?? [],
@@ -215,8 +219,8 @@ class Job {
 
   factory Job.fromJson(Map<String, dynamic> json) {
     final job = Job(
-      id: json['id'] as String,
-      title: json['title'] as String,
+      id: (json['id'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
       description: json['description'] as String?,
       customerName: json['customerName'] as String?,
       companyName: json['companyName'] as String?,
@@ -225,32 +229,47 @@ class Job {
       address: json['address'] as String?,
       orderNumber: json['orderNumber'] as String?,
       status: JobStatus.fromString(json['status'] as String?),
+      // Guard against missing/unparseable 'created' values (e.g. from older
+      // data or partial syncs) so a job is never silently excluded from
+      // Firestore orderBy('created') queries due to a null/invalid field.
       created: json['created'] != null
-          ? DateTime.tryParse(json['created'] as String)
-          : null,
+          ? (DateTime.tryParse(json['created'] as String) ?? DateTime.now())
+          : DateTime.now(),
       dueDate: json['dueDate'] != null
           ? DateTime.tryParse(json['dueDate'] as String)
           : null,
       jobType: json['jobType'] as String?,
-      estimateItems: (json['estimateItems'] as List<dynamic>?)
+      estimateItems: (json['estimateItems'] is List
+              ? json['estimateItems'] as List<dynamic>
+              : null)
           ?.map((item) => EstimateItem.fromJson(item as Map<String, dynamic>))
           .toList(),
       customerEmail: json['customerEmail'] as String?,
       paymentTerms: json['paymentTerms'] as String?,
-      attachments: (json['attachments'] as List?)
+      attachments: (json['attachments'] is List
+              ? json['attachments'] as List
+              : null)
           ?.map((e) => e.toString())
           .toList(),
-      estimateVersions: (json['estimateVersions'] as List<dynamic>?)
+      estimateVersions: (json['estimateVersions'] is List
+              ? json['estimateVersions'] as List<dynamic>
+              : null)
           ?.map((e) => EstimateVersion.fromJson(e))
           .toList(),
-      invoices: (json['invoices'] as List<dynamic>?)
+      invoices: (json['invoices'] is List ? json['invoices'] as List<dynamic> : null)
           ?.map((e) => Invoice.fromJson(e))
           .toList(),
-      notes: (json['notes'] as List?)?.map((e) => e.toString()).toList(),
-      statusHistory: (json['statusHistory'] as List<dynamic>?)
+      notes: (json['notes'] is List ? json['notes'] as List : null)
+          ?.map((e) => e.toString())
+          .toList(),
+      statusHistory: (json['statusHistory'] is List
+              ? json['statusHistory'] as List<dynamic>
+              : null)
           ?.map((e) => JobStatusHistory.fromJson(e))
           .toList(),
-      scheduleDates: (json['scheduleDates'] as List<dynamic>?)
+      scheduleDates: (json['scheduleDates'] is List
+              ? json['scheduleDates'] as List<dynamic>
+              : null)
           ?.map((e) => DateTime.tryParse(e as String))
           .whereType<DateTime>()
           .toList(),
@@ -274,7 +293,7 @@ class Job {
       'address': address,
       'orderNumber': orderNumber,
       'status': currentStatus.name,
-      'created': created?.toIso8601String(),
+      'created': created.toIso8601String(),
       'dueDate': dueDate?.toIso8601String(),
       'jobType': jobType,
       'estimateItems': estimateItems.map((item) => item.toJson()).toList(),
@@ -313,6 +332,7 @@ class Job {
       if (existingInvoiceIndex != -1) {
         // Update existing invoice, preserving any manual updates like isPaid status
         final existingInvoice = invoices[existingInvoiceIndex];
+        final nowPaid = existingInvoice.isPaid || version.isPaid;
         final updatedInvoice = Invoice(
           id: version.id ?? version.invoiceNumber ?? existingInvoice.id,
           total: version.amount,
@@ -321,23 +341,29 @@ class Job {
           payments: existingInvoice.payments,
           emailSent: existingInvoice.emailSent || version.emailSent,
           // Preserve the paid status if it was manually set, otherwise use EstimateVersion status
-          isPaid: existingInvoice.isPaid || version.isPaid,
+          isPaid: nowPaid,
           dueDate: version.dueDate,
           customerId: id,
           customerName: customerName ?? 'Unknown',
-          status: (existingInvoice.isPaid || version.isPaid)
+          status: nowPaid
               ? 'paid'
               : version.isArchived
                   ? 'archived'
                   : 'unpaid',
           isArchived: version.isArchived,
           filePath: version.filePath,
+          // Prefer whichever side already recorded a paidVia (already-paid
+          // wins), otherwise fall back to the EstimateVersion's.
+          paidVia: existingInvoice.isPaid
+              ? existingInvoice.paidVia
+              : version.paidVia,
         );
         invoices[existingInvoiceIndex] = updatedInvoice;
 
         // Also sync the paid status back to EstimateVersion if it was manually updated
         if (existingInvoice.isPaid && !version.isPaid) {
           version.isPaid = true;
+          version.paidVia = existingInvoice.paidVia;
           print(
               '✅ Synced manual payment status back to EstimateVersion: ${version.id}');
         }
@@ -363,16 +389,29 @@ class Job {
                   : 'unpaid',
           isArchived: version.isArchived,
           filePath: version.filePath,
+          paidVia: version.paidVia,
         );
         invoices.add(newInvoice);
       }
     }
 
     // Remove invoices that no longer have corresponding EstimateVersions
-    invoices.removeWhere((inv) => !invoiceVersions.any((v) =>
-        v.id == inv.id ||
-        v.invoiceNumber == inv.id ||
-        (v.amount == inv.total && v.type == 'invoice')));
+    // BUT PRESERVE THE FILE PATH - don't delete the actual PDF file!
+    final invoicesToRemove = <String>[];
+    invoices.removeWhere((inv) {
+      final hasMatch = invoiceVersions.any((v) =>
+          v.id == inv.id ||
+          v.invoiceNumber == inv.id ||
+          (v.amount == inv.total && v.type == 'invoice'));
+      if (!hasMatch) {
+        // Log which invoice is being removed and preserve its file path
+        print('⚠️ Removing orphaned invoice from list: ${inv.id} (filePath: ${inv.filePath})');
+        if (inv.filePath != null) {
+          invoicesToRemove.add(inv.filePath!);
+        }
+      }
+      return !hasMatch;
+    });
   }
 
   // Get all outstanding invoice amounts (both from EstimateVersions and Invoice objects)

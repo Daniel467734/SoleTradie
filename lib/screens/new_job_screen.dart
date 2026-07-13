@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/customer.dart';
 import '../screens/customer_picker_screen.dart';
 import '../services/firestore_service.dart';
+import '../services/demo_mode_service.dart';
 
 class NewJobScreen extends StatefulWidget {
   const NewJobScreen({super.key});
@@ -24,6 +25,12 @@ class _NewJobScreenState extends State<NewJobScreen> {
   }
 
   Future<void> _loadCustomers() async {
+    if (DemoModeService.instance.isDemoMode) {
+      setState(() {
+        customers = DemoModeService.instance.customers;
+      });
+      return;
+    }
     try {
       final loadedCustomers = await FirestoreService.getCustomers();
       setState(() {
@@ -72,8 +79,11 @@ class _NewJobScreenState extends State<NewJobScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create New Job'),
-        backgroundColor: Colors.indigo,
+        title: Text(DemoModeService.instance.isDemoMode
+            ? 'Create New Job (Demo Mode)'
+            : 'Create New Job'),
+        backgroundColor:
+            DemoModeService.instance.isDemoMode ? Colors.deepPurple : Colors.indigo,
         elevation: 2,
       ),
       body: Center(

@@ -49,6 +49,11 @@
 	<string>This app needs microphone access to enable voice input for certificate notes.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>This app needs speech recognition to convert voice input to text for certificate notes.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

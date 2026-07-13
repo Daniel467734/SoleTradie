@@ -3,6 +3,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../models/todo_item.dart';
 import '../services/todo_list_service.dart';
+import '../services/demo_mode_service.dart';
 import '../models/job.dart' as job_model;
 
 class ToDoListScreen extends StatefulWidget {
@@ -648,9 +649,13 @@ class _ToDoListScreenState extends State<ToDoListScreen> {
       appBar: AppBar(
         title: _bulkSelectMode
             ? Text('${_selectedItemIds.length} selected')
-            : const Text('To-Do List'),
+            : Text(DemoModeService.instance.isDemoMode
+                ? 'To-Do List (Demo Mode)'
+                : 'To-Do List'),
         centerTitle: true,
-        backgroundColor: colorScheme.primary,
+        backgroundColor: DemoModeService.instance.isDemoMode
+            ? Colors.deepPurple
+            : colorScheme.primary,
         foregroundColor: colorScheme.onPrimary,
         elevation: 0,
         actions: [

@@ -1,25 +1,17 @@
-import 'package:isar/isar.dart';
-
-part 'sync_outbox.g.dart';
-
 enum SyncAction { create, update, delete }
 
-@collection
 class SyncOutbox {
-  Id? id;
-  
+  int? id;
+
   late String entityType; // 'PriceBookItem', 'SyncCustomer', etc.
-  
-  @Index()
+
   late String entityId; // Local entity ID
   late String? cloudId; // Cloud entity ID if it exists
-  
-  @Enumerated(EnumType.name)
+
   late SyncAction action;
-  
+
   late String dataJson; // Serialized entity data
-  
-  @Index()
+
   late DateTime createdAt;
   late int retryCount;
   late DateTime? lastAttempt;

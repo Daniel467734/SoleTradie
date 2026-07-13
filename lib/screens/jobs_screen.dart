@@ -9,11 +9,13 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/firestore_service.dart';
+import '../services/firebase_integration_service.dart';
 import '../widgets/address_search_field.dart';
 import '../services/job_number_service.dart';
 import '../widgets/multi_date_picker_dialog.dart';
 import '../services/weather_service.dart';
 import '../services/address_search_service.dart';
+import '../services/demo_mode_service.dart';
 import '../widgets/weather_summary_tile.dart';
 import '../route_observer.dart';
 
@@ -22,6 +24,15 @@ class JobsScreen extends StatefulWidget {
   final void Function(Customer) onAdd;
   final void Function(Customer) onUpdate;
   final void Function(String) onRemove;
+  // Jobs/price book already loaded (local-first + Firestore-synced) by
+  // main.dart. These are used to seed the screen's state immediately so
+  // that on platforms where dart:io/path_provider isn't available (e.g.
+  // web), the screen doesn't reset to an empty list every time it's
+  // opened - previously this screen ONLY read from disk via
+  // getApplicationDocumentsDirectory(), which silently fails on web and
+  // made it look like Firestore data "disappeared" when navigating here.
+  final List<Job>? jobs;
+  final List<PriceBookItem>? priceBook;
 
   const JobsScreen({
     super.key,
@@ -29,6 +40,8 @@ class JobsScreen extends StatefulWidget {
     required this.onAdd,
     required this.onUpdate,
     required this.onRemove,
+    this.jobs,
+    this.priceBook,
   });
 
   @override
@@ -44,12 +57,51 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
   @override
   void initState() {
     super.initState();
-    jobs = [];
-    priceBook = [];
+    // Seed immediately from whatever main.dart already has (local-first +
+    // Firestore-synced), so the UI never shows an empty list while the
+    // (possibly unsupported, e.g. on web) disk read below completes.
+    jobs = List.from(widget.jobs ?? []);
+    priceBook = List.from(widget.priceBook ?? []);
     search = '';
     _statusFilter = 'active';
     _loadJobsFromDisk();
     _loadPriceBook();
+    // Also fetch directly from Firestore ourselves. widget.jobs/priceBook
+    // are just a snapshot taken at the moment this screen was pushed - if
+    // main.dart's own background Firestore sync (kicked off on sign-in)
+    // hadn't finished yet at that moment, this screen would otherwise be
+    // stuck showing an empty list forever, since (unlike main.dart's
+    // DashboardScreen) this pushed route is never rebuilt when main.dart's
+    // state updates later. This is especially important on web, where
+    // there's no local disk cache to bridge the gap while waiting.
+    _refreshJobsAndPriceBookFromCloud();
+  }
+
+  Future<void> _refreshJobsAndPriceBookFromCloud() async {
+    try {
+      final cloudJobs = await FirebaseIntegrationService.loadJobs(
+        onCloudUpdate: (updatedJobs) {
+          if (mounted) setState(() => jobs = updatedJobs);
+        },
+      );
+      if (mounted && cloudJobs.isNotEmpty) {
+        setState(() => jobs = cloudJobs);
+      }
+    } catch (e) {
+      print('⚠️ JobsScreen: failed to refresh jobs from cloud: $e');
+    }
+    try {
+      final cloudPriceBook = await FirebaseIntegrationService.loadPriceBook(
+        onCloudUpdate: (updatedItems) {
+          if (mounted) setState(() => priceBook = updatedItems);
+        },
+      );
+      if (mounted && cloudPriceBook.isNotEmpty) {
+        setState(() => priceBook = cloudPriceBook);
+      }
+    } catch (e) {
+      print('⚠️ JobsScreen: failed to refresh price book from cloud: $e');
+    }
   }
 
   @override
@@ -92,11 +144,24 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
   }
 
   Future<File> get _jobsFile async {
-    final dir = await getApplicationDocumentsDirectory();
-    return File('${dir.path}/jobs.json');
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      return File('${dir.path}/jobs.json');
+    } catch (e) {
+      print('⚠️ JobsScreen._jobsFile: could not access application documents directory (expected on web): $e');
+      // Return a dummy file path that won't actually be accessible on web
+      // The caller's try/catch will catch the error when attempting I/O
+      return File('/tmp/jobs.json');
+    }
   }
 
   Future<void> _loadJobs() async {
+    if (DemoModeService.instance.isDemoMode) {
+      setState(() {
+        jobs = DemoModeService.instance.getJobs();
+      });
+      return;
+    }
     try {
       final file = await _jobsFile;
       if (await file.exists()) {
@@ -108,16 +173,35 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
         });
       }
     } catch (e) {
-      // If error, start with empty list
-      setState(() => jobs = []);
+      // Local disk access isn't available on some platforms (e.g. web,
+      // where getApplicationDocumentsDirectory() throws a
+      // MissingPluginException). Previously this reset `jobs` to an empty
+      // list on any error, which wiped out the perfectly good
+      // Firestore-synced data that main.dart had already seeded into this
+      // screen via widget.jobs - making it look like jobs "disappeared"
+      // every time this screen was opened on web. Just log and keep
+      // whatever data is already in memory instead.
+      print('⚠️ Could not load jobs from local disk (expected on web): $e');
     }
   }
 
   Future<void> _saveJobs() async {
-    // Save to local file for backward compatibility
-    final file = await _jobsFile;
-    final jsonList = jobs.map((job) => job.toJson()).toList();
-    await file.writeAsString(jsonEncode(jsonList));
+    if (DemoModeService.instance.isDemoMode) {
+      // Demo jobs are already stored in DemoModeService's in-memory list;
+      // nothing to persist to real disk/cloud storage while in demo mode.
+      return;
+    }
+    // Save to local file for backward compatibility. This throws a
+    // MissingPluginException on web (no path_provider implementation
+    // there), so it must not be allowed to abort the cloud sync below,
+    // which is the actual source of truth on web.
+    try {
+      final file = await _jobsFile;
+      final jsonList = jobs.map((job) => job.toJson()).toList();
+      await file.writeAsString(jsonEncode(jsonList));
+    } catch (e) {
+      print('⚠️ Could not save jobs to local disk (expected on web): $e');
+    }
 
     // Sync to cloud in background so job creation can continue immediately
     _syncJobsToCloud();
@@ -135,7 +219,24 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
     }
   }
 
+  /// Sync a single job to cloud (used for status updates)
+  Future<void> _syncJobToCloud(Job job) async {
+    try {
+      await FirestoreService.saveJob(job);
+      print('✅ Job ${job.id} synced to cloud (status: ${job.currentStatus.displayName})');
+    } catch (e) {
+      print('⚠️ Error syncing job ${job.id} to cloud: $e');
+    }
+  }
+
   Future<void> _addJob(Job job) async {
+    if (DemoModeService.instance.isDemoMode) {
+      await DemoModeService.instance.createJob(job);
+      setState(() {
+        jobs = DemoModeService.instance.getJobs();
+      });
+      return;
+    }
     setState(() {
       jobs.add(job);
     });
@@ -143,22 +244,37 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
   }
 
   Future<void> _loadPriceBook() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/price_book.json');
-    if (await file.exists()) {
-      final jsonString = await file.readAsString();
-      final decoded = jsonDecode(jsonString);
-      final List<dynamic> jsonList;
-      if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
-        jsonList = decoded['items'] as List<dynamic>;
-      } else if (decoded is List<dynamic>) {
-        jsonList = decoded;
-      } else {
-        throw Exception('Unexpected pricebook JSON structure');
+    if (DemoModeService.instance.isDemoMode) {
+      // Demo mode uses its own in-memory pricebook (see DemoModeService);
+      // the jobs screen's PriceBookItem list isn't needed for the demo
+      // sandbox flows, so just leave it empty rather than reading real
+      // pricebook data from disk.
+      setState(() => priceBook = []);
+      return;
+    }
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/price_book.json');
+      if (await file.exists()) {
+        final jsonString = await file.readAsString();
+        final decoded = jsonDecode(jsonString);
+        final List<dynamic> jsonList;
+        if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
+          jsonList = decoded['items'] as List<dynamic>;
+        } else if (decoded is List<dynamic>) {
+          jsonList = decoded;
+        } else {
+          throw Exception('Unexpected pricebook JSON structure');
+        }
+        setState(() {
+          priceBook = jsonList.map((e) => PriceBookItem.fromJson(e)).toList();
+        });
       }
-      setState(() {
-        priceBook = jsonList.map((e) => PriceBookItem.fromJson(e)).toList();
-      });
+    } catch (e) {
+      // Local disk access isn't available on some platforms (e.g. web).
+      // Keep whatever price book data was already seeded from
+      // widget.priceBook instead of leaving/forcing an empty list.
+      print('⚠️ Could not load price book from local disk (expected on web): $e');
     }
   }
 
@@ -201,7 +317,9 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Jobs'),
+        title: Text(DemoModeService.instance.isDemoMode ? 'Jobs (Demo Mode)' : 'Jobs'),
+        backgroundColor:
+            DemoModeService.instance.isDemoMode ? Colors.deepPurple : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
@@ -802,6 +920,8 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
 
   /// Delete any files that belong to a job and remove local metadata files
   Future<void> _deleteJobFiles(Job job) async {
+    print('🔴 _deleteJobFiles() called for job: ${job.id}');
+    
     final filePaths = <String>{
       ...(job.attachments ?? []),
       ...job.estimateVersions
@@ -810,10 +930,13 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
       ...job.invoices.map((invoice) => invoice.filePath).whereType<String>(),
     };
 
+    print('📋 Files to delete: ${filePaths.length}');
+    
     for (final path in filePaths) {
       try {
         final file = File(path);
         if (await file.exists()) {
+          print('🗑️ Deleting: $path');
           await file.delete();
         }
       } catch (e) {
@@ -871,7 +994,9 @@ class _JobsScreenState extends State<JobsScreen> with RouteAware {
                           setState(() {
                             job.updateStatus(value, reason: 'Manually updated');
                           });
+                          // Save locally AND sync to cloud
                           _saveJobs();
+                          _syncJobToCloud(job);
                           Navigator.pop(context);
                         }
                       },

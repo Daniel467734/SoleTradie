@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -30,22 +32,55 @@ class XeroService {
     ));
   }
 
+  /// Generates a cryptographically random PKCE code verifier (43-128
+  /// chars, unreserved URL-safe characters only, per RFC 7636).
+  static String _generateCodeVerifier() {
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    final random = Random.secure();
+    return List.generate(64, (_) => chars[random.nextInt(chars.length)])
+        .join();
+  }
+
+  /// Derives the PKCE `code_challenge` (S256 method) from a verifier:
+  /// base64url(SHA256(verifier)) with no padding.
+  static String _codeChallengeFromVerifier(String verifier) {
+    final digest = sha256.convert(utf8.encode(verifier));
+    return base64Url.encode(digest.bytes).replaceAll('=', '');
+  }
+
   /// Runs the full Xero OAuth2 Authorization Code flow: opens Xero's
   /// login/consent screen in an in-app browser tab, captures the
   /// redirect back to [redirectUri], exchanges the authorization code
   /// for an access/refresh token pair, discovers the connected
   /// tenant(s) via `/connections`, and persists everything via
   /// [saveTokens]. Returns true on success.
+  ///
+  /// [clientSecret] is optional: Xero apps registered as "Mobile or
+  /// desktop app" (the correct type for a Flutter app) don't get a
+  /// client secret at all - they authenticate the token exchange using
+  /// PKCE (a `code_verifier`/`code_challenge` pair) instead. If
+  /// [clientSecret] is null/empty, PKCE is used and no `Authorization:
+  /// Basic` header is sent. If a secret IS provided (e.g. a "Web app"
+  /// Xero client), the classic confidential-client Basic-auth flow is
+  /// used instead, for backwards compatibility.
   Future<bool> connect({
     required String clientId,
-    required String clientSecret,
+    String? clientSecret,
   }) async {
+    final usePkce = clientSecret == null || clientSecret.isEmpty;
+    final codeVerifier = usePkce ? _generateCodeVerifier() : null;
+    final codeChallenge =
+        codeVerifier != null ? _codeChallengeFromVerifier(codeVerifier) : null;
+
     final authorizationUri = Uri.parse(authUrl).replace(queryParameters: {
       'response_type': 'code',
       'client_id': clientId,
       'redirect_uri': redirectUri,
       'scope': 'accounting.transactions accounting.contacts '
           'accounting.settings offline_access',
+      if (codeChallenge != null) 'code_challenge': codeChallenge,
+      if (codeChallenge != null) 'code_challenge_method': 'S256',
     });
 
     final resultUrl = await FlutterWebAuth2.authenticate(
@@ -64,12 +99,15 @@ class XeroService {
         'grant_type': 'authorization_code',
         'code': code,
         'redirect_uri': redirectUri,
+        'client_id': clientId,
+        if (codeVerifier != null) 'code_verifier': codeVerifier,
       },
       options: Options(
         contentType: Headers.formUrlEncodedContentType,
         headers: {
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$clientId:$clientSecret'))}',
+          if (!usePkce)
+            'Authorization':
+                'Basic ${base64Encode(utf8.encode('$clientId:$clientSecret'))}',
         },
       ),
     );
@@ -111,7 +149,11 @@ class XeroService {
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('xero_client_id', clientId);
-    await prefs.setString('xero_client_secret', clientSecret);
+    if (!usePkce) {
+      await prefs.setString('xero_client_secret', clientSecret);
+    } else {
+      await prefs.remove('xero_client_secret');
+    }
 
     return true;
   }
@@ -377,21 +419,28 @@ class XeroService {
     final refreshToken = credentials['refreshToken'];
     final clientId = credentials['clientId'];
     final clientSecret = credentials['clientSecret'];
-    
-    if (refreshToken == null || clientId == null || clientSecret == null) {
+    // PKCE ("Mobile or desktop app") Xero clients have no secret - the
+    // refresh_token grant only needs client_id in that case. Confidential
+    // ("Web app") clients still need Basic auth with the secret.
+    final usePkce = clientSecret == null || clientSecret.isEmpty;
+
+    if (refreshToken == null || clientId == null) {
       return false;
     }
-    
+
     try {
       final response = await _dio.post(
         tokenUrl,
         data: {
           'grant_type': 'refresh_token',
           'refresh_token': refreshToken,
+          if (usePkce) 'client_id': clientId,
         },
         options: Options(
           headers: {
-            'Authorization': 'Basic ${base64Encode(utf8.encode('$clientId:$clientSecret'))}',
+            if (!usePkce)
+              'Authorization':
+                  'Basic ${base64Encode(utf8.encode('$clientId:$clientSecret'))}',
             'Content-Type': 'application/x-www-form-urlencoded',
           },
         ),

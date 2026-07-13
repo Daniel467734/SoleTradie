@@ -31,7 +31,7 @@ class PriceBookService {
       // Only if local is empty, try cloud
       if (FirestoreService.isAuthenticated) {
         print('📡 No local items, trying cloud...');
-        final cloudItems = await FirestoreService.getPriceBookItems(limit: 1000);
+        final cloudItems = await FirestoreService.getPriceBookItems();
         if (cloudItems.isNotEmpty) {
           print('☁️ Loaded ${cloudItems.length} items from cloud');
           await _saveToLocal(cloudItems);
@@ -162,7 +162,7 @@ class PriceBookService {
     if (!FirestoreService.isAuthenticated) return;
     
     try {
-      final cloudItems = await FirestoreService.getPriceBookItems(limit: 1000);
+      final cloudItems = await FirestoreService.getPriceBookItems();
       if (cloudItems.isNotEmpty && cloudItems.length != (_cache?.length ?? 0)) {
         await _saveToLocal(cloudItems);
         _cache = cloudItems;

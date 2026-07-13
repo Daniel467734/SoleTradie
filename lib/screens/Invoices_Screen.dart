@@ -8,6 +8,7 @@ import '../models/job.dart';
 import '../models/estimate_version.dart';
 import '../models/invoice.dart';
 import '../services/email_service.dart';
+import '../services/firebase_integration_service.dart';
 import 'pricebook_extensive_screen.dart' show PriceBookItem;
 import 'estimate_builder_screen.dart';
 import 'job_details_screen.dart';
@@ -46,18 +47,76 @@ class _InvoicesScreenState extends State<InvoicesScreen> with RouteAware {
     _invoices = List<Map<String, dynamic>>.from(widget.invoices);
     _loadSentFollowUps();
     _reloadInvoicesFromDisk();
+    // Also fetch directly from Firestore ourselves. widget.invoices is just
+    // a snapshot taken at the moment this screen was pushed, and
+    // _reloadInvoicesFromDisk() relies on dart:io/path_provider which is
+    // unsupported (and silently no-ops) on Flutter web. Without this, the
+    // screen could get stuck showing an empty/stale list forever if the
+    // cloud sync in main.dart hadn't finished by the time this screen was
+    // pushed - this pushed route is never rebuilt when main.dart's own
+    // state updates later.
+    _refreshInvoicesFromCloud();
+  }
+
+  /// Builds the flattened invoices list (mirrors the logic in
+  /// `_reloadInvoicesFromDisk`) from an arbitrary list of jobs.
+  List<Map<String, dynamic>> _buildInvoicesFromJobs(List<Job> allJobs) {
+    final refreshedInvoices = <Map<String, dynamic>>[];
+
+    for (final job in allJobs) {
+      job.syncStatusFromDocuments();
+      for (final version in job.invoiceVersions) {
+        final versionId = version.id ?? version.invoiceNumber;
+        final hasMatchingInvoice = versionId != null &&
+            job.invoices.any((invoice) {
+              return invoice.id == versionId ||
+                  invoice.id == version.invoiceNumber;
+            });
+        if (!hasMatchingInvoice) {
+          refreshedInvoices.add({'job': job, 'estimateVersion': version});
+        }
+      }
+    }
+
+    for (final job in allJobs) {
+      for (final invoice in job.invoices) {
+        refreshedInvoices.add({'job': job, 'invoice': invoice});
+      }
+    }
+
+    return refreshedInvoices;
+  }
+
+  /// Fetches jobs directly from Firestore (bypassing the local disk cache,
+  /// which doesn't exist/work on web) and rebuilds the invoices list from
+  /// them. This solves the Navigator.push snapshot-staleness race
+  /// condition described above `_refreshInvoicesFromCloud`'s call site.
+  Future<void> _refreshInvoicesFromCloud() async {
+    try {
+      final cloudJobs = await FirebaseIntegrationService.loadJobs(
+        onCloudUpdate: (updatedJobs) {
+          if (mounted) {
+            setState(() {
+              _invoices = _buildInvoicesFromJobs(updatedJobs);
+            });
+          }
+        },
+      );
+      if (mounted && cloudJobs.isNotEmpty) {
+        setState(() {
+          _invoices = _buildInvoicesFromJobs(cloudJobs);
+        });
+      }
+    } catch (e) {
+      print('⚠️ InvoicesScreen: failed to refresh invoices from cloud: $e');
+    }
   }
 
   Future<void> _loadSentFollowUps() async {
     final prefs = await SharedPreferences.getInstance();
     Map<String, String> loadedDates = {};
 
-    final listValue = prefs.getStringList('sent_followup_invoices');
-    if (listValue != null) {
-      for (final key in listValue) {
-        loadedDates[key] = DateTime.now().toIso8601String();
-      }
-    } else {
+    try {
       final jsonString = prefs.getString('sent_followup_invoices');
       if (jsonString != null && jsonString.isNotEmpty) {
         try {
@@ -69,6 +128,8 @@ class _InvoicesScreenState extends State<InvoicesScreen> with RouteAware {
           // Ignore invalid stored format
         }
       }
+    } catch (e) {
+      print('⚠️ Error loading sent follow-ups: $e');
     }
 
     if (mounted) {
@@ -164,12 +225,16 @@ Many Thanks''';
   Future<void> _saveJobChanges(Job job) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
+      print('💾 [INVOICE DEBUG] _saveJobChanges starting for job: ${job.id}');
+      print('💾 [INVOICE DEBUG] Invoice being saved: isPaid=${job.invoices.where((i) => i.isPaid).length}/${job.invoices.length} invoices marked paid');
+      
       // Save to local storage
       final directory = await getApplicationDocumentsDirectory();
 
       // Save individual job file
       final jobFile = File('${directory.path}/job_${job.id}.json');
       await jobFile.writeAsString(jsonEncode(job.toJson()));
+      print('💾 [INVOICE DEBUG] Saved to local job file: ${jobFile.path}');
 
       // Update main jobs.json file
       final mainJobsFile = File('${directory.path}/jobs.json');
@@ -194,9 +259,9 @@ Many Thanks''';
       // Save updated jobs list
       final jsonList = allJobs.map((j) => j.toJson()).toList();
       await mainJobsFile.writeAsString(jsonEncode(jsonList));
+      print('✅ Job saved successfully to local disk: ${job.id}');
 
-      print('✅ Job saved successfully: ${job.id}');
-
+      // Show success message immediately - don't wait for Firebase
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(
@@ -205,8 +270,20 @@ Many Thanks''';
           duration: Duration(seconds: 2),
         ),
       );
+
+      // 🔥 Save to Firebase IN THE BACKGROUND (non-blocking)
+      // This way the UI updates instantly and Firebase syncs without blocking
+      print('💾 [INVOICE DEBUG] Now saving to Firebase for job: ${job.id} (background)');
+      FirebaseIntegrationService.saveJob(job).then((_) {
+        print('✅ [INVOICE DEBUG] Job saved to Firebase successfully: ${job.id}');
+      }).catchError((firebaseError) {
+        print('❌ [INVOICE DEBUG] Failed to save to Firebase: $firebaseError');
+        print('⚠️ [INVOICE DEBUG] LOCAL SAVE SUCCEEDED - invoice stays marked as paid locally');
+      });
+      
     } catch (e) {
       print('❌ Error saving job: $e');
+      print('❌ [INVOICE DEBUG] Stack trace: ${StackTrace.current}');
 
       if (!mounted) return;
       messenger.showSnackBar(
@@ -459,6 +536,7 @@ Many Thanks''';
           amountPaid: invoice.amount,
           isPaid: true,
           status: 'paid',
+          paidVia: 'manual',
         );
         final invoiceIndex = job.invoices.indexWhere((inv) => inv.id == invoice.id);
         if (invoiceIndex != -1) {
@@ -468,6 +546,7 @@ Many Thanks''';
         invoice = updatedInvoice;
       } else if (estimateVersion != null) {
         estimateVersion.isPaid = true;
+        estimateVersion.paidVia = 'manual';
       }
     } else if (action == 'void') {
       if (invoice != null) {
@@ -774,6 +853,7 @@ Many Thanks''';
                 bool isArchived;
                 String invoiceNumber;
                 String? filePath;
+                String paidVia = 'manual';
 
                 if (invoice != null) {
                   // Handle Invoice object
@@ -784,6 +864,7 @@ Many Thanks''';
                   isArchived = invoice.isArchived;
                   invoiceNumber = invoice.id;
                   filePath = invoice.filePath;
+                  paidVia = invoice.paidVia;
                 } else if (estimateVersion != null) {
                   // Handle EstimateVersion invoice
                   dueDate = estimateVersion.dueDate;
@@ -794,6 +875,7 @@ Many Thanks''';
                   invoiceNumber = estimateVersion.invoiceNumber ??
                       estimateVersion.id ??
                       'N/A';
+                  paidVia = estimateVersion.paidVia;
                   filePath = estimateVersion.filePath;
                 } else {
                   return const SizedBox.shrink(); // Skip invalid entries
@@ -1009,9 +1091,11 @@ Many Thanks''';
                                                         color: Colors.green,
                                                         borderRadius: BorderRadius.circular(12),
                                                       ),
-                                                      child: const Text(
-                                                        'PAID',
-                                                        style: TextStyle(
+                                                      child: Text(
+                                                        paidVia == 'xero'
+                                                            ? 'PAID (XERO)'
+                                                            : 'MARKED PAID',
+                                                        style: const TextStyle(
                                                           color: Colors.white,
                                                           fontSize: 12,
                                                           fontWeight: FontWeight.bold,

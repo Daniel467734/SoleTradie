@@ -174,6 +174,10 @@ class InProgressBuildService {
     if (buildIndex == -1) throw Exception('Build not found: $buildId');
 
     final existingBuild = allBuilds[buildIndex];
+    if (existingBuild.isFinalized) {
+      throw Exception(
+          'Build $buildId is finalized (linked to a document) and cannot be updated in place. Use duplicateBuild instead.');
+    }
     final updatedVersion = existingBuild.currentVersion.copyWith(
       totalAmount: totalAmount,
       totalProfit: totalProfit,
@@ -217,6 +221,56 @@ class InProgressBuildService {
     await saveAllBuilds(allBuilds);
     
     return updatedBuild;
+  }
+
+  /// Mark a build as finalized/linked to a resulting document (estimate,
+  /// quote, or invoice). Finalized builds are preserved - they are no
+  /// longer mutated in place; reopening them should create a new duplicate
+  /// build instead (see [duplicateBuild]).
+  static Future<InProgressBuild> markFinalized({
+    required String buildId,
+    required String documentId,
+  }) async {
+    final allBuilds = await loadAllBuilds();
+    final buildIndex = allBuilds.indexWhere((build) => build.id == buildId);
+    if (buildIndex == -1) throw Exception('Build not found: $buildId');
+
+    final updatedBuild = allBuilds[buildIndex].copyWith(
+      finalizedDocumentId: documentId,
+      lastModified: DateTime.now(),
+    );
+    allBuilds[buildIndex] = updatedBuild;
+    await saveAllBuilds(allBuilds);
+    return updatedBuild;
+  }
+
+  /// Create a brand-new build that duplicates the given source build's
+  /// current version (items/subsections/additionalData), used when
+  /// reopening a build that's already finalized/linked to a document - the
+  /// original must be preserved untouched, so any edits go into this new
+  /// duplicate instead.
+  static Future<InProgressBuild> duplicateBuild({
+    required String sourceBuildId,
+    String? buildName,
+    String? buildType,
+  }) async {
+    final source = await getBuildById(sourceBuildId);
+    if (source == null) throw Exception('Build not found: $sourceBuildId');
+    final currentVersion = source.currentVersion;
+
+    return createNewBuild(
+      jobId: source.jobId,
+      items: currentVersion.items.map((item) => item.copyWith()).toList(),
+      subsections: List<String>.from(currentVersion.subsections),
+      templateName: source.templateName,
+      buildName: buildName,
+      buildType: buildType,
+      totalAmount: currentVersion.totalAmount,
+      totalProfit: currentVersion.totalProfit,
+      additionalData: currentVersion.additionalData != null
+          ? Map<String, dynamic>.from(currentVersion.additionalData!)
+          : null,
+    );
   }
 
   /// Delete an entire build

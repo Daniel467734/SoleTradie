@@ -1,13 +1,8 @@
-import 'package:isar/isar.dart';
 import 'package:cloud_firestore/cloud_firestore.dart' as firestore;
 
-part 'price_book_item.g.dart';
-
-@collection
 class PriceBookItem {
-  Id? id;
-  
-  @Index()
+  int? id;
+
   late String code;
   
   late String name;
@@ -25,8 +20,7 @@ class PriceBookItem {
   late String? origin;
   late int usageCount;
   late double percentageChanged;
-  
-  @Index()
+
   late DateTime createdAt;
   late DateTime updatedAt;
   

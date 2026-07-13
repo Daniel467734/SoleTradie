@@ -80,3 +80,36 @@ ios/Flutter/Flutter.framework
 ios/Flutter/Flutter.podspec
 pubspec.lock
 
+# --- Sensitive/local data - NEVER commit (this repo is PUBLIC) ---
+# Real customer/job/pricebook data synced from the device
+jobs.json
+customers.json
+price_book.json
+price_book_extensive.json
+best_merged_jobs.json
+consolidated_jobs.json
+device_jobs_now.json
+device_shared_prefs.xml
+phone_backup/
+.firebase/
+
+# Firebase Auth exports / admin scripts containing password hashes, tokens etc.
+functions/auth_export.json
+functions/*_result.txt
+functions/export_log*.txt
+functions/check_*.js
+functions/fix_missing_created*.js
+functions/grant_invoker.js
+functions/rebuild_adc.js
+functions/restore_from_backup.js
+functions/restore_jobs_to_firestore.js
+
+# Firebase config generated with real project keys
+lib/firebase_options.dart
+google-services.json
+GoogleService-Info.plist
+
+# Misc debug/export artifacts that may contain real data
+*_debug.txt
+push_verify_debug.txt
+flog_debug.txt

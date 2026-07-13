@@ -88,8 +88,13 @@ class _InProgressEstimatesScreenState extends State<InProgressEstimatesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Filter builds based on search
-    final filteredBuilds = allBuilds.where((build) {
+    // Filter builds based on search, excluding builds that have already been
+    // finalized into a document (estimate/quote/invoice) - those are
+    // preserved as the record for that document and shown alongside it
+    // instead of in this generic list.
+    final filteredBuilds = allBuilds
+        .where((build) => !build.isFinalized)
+        .where((build) {
       final job = widget.jobs.firstWhere(
         (j) => j.id == build.jobId,
         orElse: () => job_model.Job(

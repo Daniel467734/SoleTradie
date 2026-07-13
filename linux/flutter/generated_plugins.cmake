@@ -6,7 +6,6 @@ list(APPEND FLUTTER_PLUGIN_LIST
   amplify_db_common
   desktop_webview_window
   file_selector_linux
-  isar_flutter_libs
   open_file_linux
   printing
   url_launcher_linux

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -16,6 +17,8 @@ import 'screens/offline_data_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/firestore_service.dart';
 import 'services/notification_service.dart';
+import 'services/email_service.dart';
+import 'services/demo_mode_service.dart';
 import 'services/memory_optimization_service.dart';
 import 'services/storage_initializer.dart';
 import 'services/customer_storage_strategy_service.dart';
@@ -23,6 +26,7 @@ import 'services/sync_scheduler.dart';
 import 'services/storage_strategy_service.dart'; // For DataType enum
 import 'services/firebase_integration_service.dart';
 import 'services/service_locator.dart';
+import 'firebase_options.dart';
 import 'screens/scheduling_screen.dart';
 
 import 'screens/pricebook_extensive_screen.dart' as pb;
@@ -35,53 +39,64 @@ Future<List<pb.PriceBookItem>> loadPriceBook() async {
   try {
     print('📚 Loading pricebook using hybrid approach...');
     
-    // Try local storage first (fastest)
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File('${directory.path}/price_book.json');
+    // On web, skip local storage entirely and go straight to Firebase
+    // because getApplicationDocumentsDirectory() throws MissingPluginException
+    bool isWeb = false;
     
-    print('📁 Looking for file at: ${file.path}');
-    
-    if (await file.exists()) {
-      try {
-        final jsonString = await file.readAsString();
-        final fileSize = await file.length();
-        
-        print('📄 File found: size=${fileSize} bytes');
-        
-        if (jsonString.trim().isNotEmpty) {
-          final jsonData = jsonDecode(jsonString);
+    // Try local storage first (fastest) - on non-web platforms only
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/price_book.json');
+      
+      print('📁 Looking for file at: ${file.path}');
+      
+      if (await file.exists()) {
+        try {
+          final jsonString = await file.readAsString();
+          final fileSize = await file.length();
           
-          // Handle both old format (direct list) and new format (with metadata)
-          final List<dynamic> itemsList;
-          if (jsonData is Map && jsonData.containsKey('items')) {
-            itemsList = jsonData['items'] as List<dynamic>;
-            print('📦 Found ${itemsList.length} items in metadata format');
+          print('📄 File found: size=${fileSize} bytes');
+          
+          if (jsonString.trim().isNotEmpty) {
+            final jsonData = jsonDecode(jsonString);
+            
+            // Handle both old format (direct list) and new format (with metadata)
+            final List<dynamic> itemsList;
+            if (jsonData is Map && jsonData.containsKey('items')) {
+              itemsList = jsonData['items'] as List<dynamic>;
+              print('📦 Found ${itemsList.length} items in metadata format');
+            } else {
+              itemsList = jsonData as List<dynamic>;
+              print('📦 Found ${itemsList.length} items in direct format');
+            }
+            
+            final items = itemsList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
+            print('✅ Successfully loaded ${items.length} items from local storage');
+            
+            // Show brief loading feedback
+            if (items.isNotEmpty) {
+              // Try background cloud sync (non-blocking)
+              _backgroundCloudSync().catchError((e) {
+                print('Background sync failed: $e');
+              });
+            }
+            
+            return items;
           } else {
-            itemsList = jsonData as List<dynamic>;
-            print('📦 Found ${itemsList.length} items in direct format');
+            print('📄 File exists but is empty');
           }
-          
-          final items = itemsList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
-          print('✅ Successfully loaded ${items.length} items from local storage');
-          
-          // Show brief loading feedback
-          if (items.isNotEmpty) {
-            // Try background cloud sync (non-blocking)
-            _backgroundCloudSync().catchError((e) {
-              print('Background sync failed: $e');
-            });
-          }
-          
-          return items;
-        } else {
-          print('📄 File exists but is empty');
+        } catch (e) {
+          print('❌ Error parsing local data: $e');
+          // Don't delete the file, just try other sources
         }
-      } catch (e) {
-        print('❌ Error parsing local data: $e');
-        // Don't delete the file, just try other sources
+      } else {
+        print('📄 No local file found');
       }
-    } else {
-      print('📄 No local file found');
+    } catch (e) {
+      // If we can't access local storage, we're probably on web
+      isWeb = true;
+      print('🌐 Cannot access local storage (likely web): $e');
+      print('🌐 Skipping local storage, going straight to Firebase');
     }
     
     // Try Firebase if local is empty and user is authenticated
@@ -89,19 +104,21 @@ Future<List<pb.PriceBookItem>> loadPriceBook() async {
       try {
         print('☁️ Trying to load from Firebase...');
         await FirestoreService.initialize();
-        final firestoreItems = await FirestoreService.getPriceBookItems(limit: 1000);
+        final firestoreItems = await FirestoreService.getPriceBookItems();
         
         if (firestoreItems.isNotEmpty) {
           final items = firestoreItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
           print('☁️ Loaded ${items.length} items from cloud');
           
-          // Save to local for next time
-          _saveToLocal(items).then((_) {
-            print('💾 Cloud data cached locally');
-          }).catchError((e) {
-            print('Local caching failed: $e');
-            return null;
-          });
+          // Save to local for next time (non-blocking, skip on web)
+          if (!isWeb) {
+            _saveToLocal(items).then((_) {
+              print('💾 Cloud data cached locally');
+            }).catchError((e) {
+              print('Local caching failed: $e');
+              return null;
+            });
+          }
           
           return items;
         } else {
@@ -118,11 +135,13 @@ Future<List<pb.PriceBookItem>> loadPriceBook() async {
     final samples = _createSampleItems();
     print('🔧 Created ${samples.length} sample items as fallback');
     
-    // Save sample items locally
-    _saveToLocal(samples).catchError((e) {
-      print('Failed to save samples: $e');
-      return null;
-    });
+    // Save sample items locally (skip on web)
+    if (!isWeb) {
+      _saveToLocal(samples).catchError((e) {
+        print('Failed to save samples: $e');
+        return null;
+      });
+    }
     
     return samples;
     
@@ -137,7 +156,7 @@ Future<void> _backgroundCloudSync() async {
   
   try {
     await FirestoreService.initialize();
-    final cloudItems = await FirestoreService.getPriceBookItems(limit: 1000);
+    final cloudItems = await FirestoreService.getPriceBookItems();
     if (cloudItems.isNotEmpty) {
       final items = cloudItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
       await _saveToLocal(items);
@@ -250,19 +269,20 @@ Future<void> _logMemoryStatus([String? context]) async {
 }
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  FlutterError.onError = (details) {
-    FlutterError.dumpErrorToConsole(details, forceReport: true);
-    _logUncaughtError('FlutterError', details.exception, details.stack);
-  };
-
-  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
-    _logUncaughtError('PlatformDispatcher', error, stack);
-    return true;
-  };
-
+  BindingBase.debugZoneErrorsAreFatal = true;
   runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    FlutterError.onError = (details) {
+      FlutterError.dumpErrorToConsole(details, forceReport: true);
+      _logUncaughtError('FlutterError', details.exception, details.stack);
+    };
+
+    WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+      _logUncaughtError('PlatformDispatcher', error, stack);
+      return true;
+    };
+
     await _runApp();
   }, (error, stack) async {
     await _logUncaughtError('Zone', error, stack);
@@ -272,7 +292,9 @@ void main() {
 Future<void> _runApp() async {
   // Initialize Firebase
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
     print('✅ Firebase initialized successfully');
   } catch (e, st) {
     print('❌ Firebase initialization error: $e\n$st');
@@ -290,7 +312,11 @@ Future<void> _runApp() async {
     
     // Configure Firestore with memory limits immediately after Firebase init
     // Note: This requires the user to be signed in first
-    
+
+    // Restore Demo Mode state (and any previously built-up demo data) so
+    // the sandbox survives an app restart while still toggled on.
+    await DemoModeService.instance.initialize();
+
     // Use non-blocking, memory-optimized initialization
     final futures = <Future>[
       // Initialize notification service (non-blocking)
@@ -301,6 +327,17 @@ Future<void> _runApp() async {
         },
       ).catchError((e) {
         print('Failed to initialize notification service: $e');
+      }),
+
+      // Retry any emails left over from a previous session that never
+      // finished sending (e.g. app was killed/backgrounded mid-send).
+      retryPendingEmails().timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          print('Pending email retry timed out - will try again later');
+        },
+      ).catchError((e) {
+        print('Failed to retry pending emails: $e');
       }),
       
       // Load essential price book only (non-blocking, limited data)
@@ -388,11 +425,30 @@ class _MyAppState extends State<MyApp> {
         try {
           // Initialize Firebase integration when user signs in
           await FirebaseIntegrationService.initializeForUser();
+
+          // Register this device's FCM token now that we have a signed-in
+          // user, so the "New customer added" push (sent from the
+          // submitCustomerForm Cloud Function) has somewhere to deliver
+          // to even if NotificationService.initialize() ran earlier at
+          // app startup before sign-in completed.
+          unawaited(NotificationService.registerFcmTokenForCurrentUser());
           
-          // Load data using enhanced Firebase integration
+          // Load data local-first for an instant UI. Each call returns
+          // immediately with whatever is on-device, then refreshes from
+          // the cloud in the background and calls onCloudUpdate to patch
+          // the UI once that finishes - avoids blocking startup for
+          // 30-40+ seconds on a cold Firestore connection.
           final futures = <Future>[];
           
-          futures.add(FirebaseIntegrationService.loadCustomers().then((loadedCustomers) {
+          futures.add(FirebaseIntegrationService.loadCustomers(
+            onCloudUpdate: (cloudCustomers) {
+              if (mounted) {
+                setState(() {
+                  customers = cloudCustomers;
+                });
+              }
+            },
+          ).then((loadedCustomers) {
             if (mounted) {
               setState(() {
                 customers = loadedCustomers;
@@ -400,7 +456,15 @@ class _MyAppState extends State<MyApp> {
             }
           }));
           
-          futures.add(FirebaseIntegrationService.loadJobs().then((loadedJobs) {
+          futures.add(FirebaseIntegrationService.loadJobs(
+            onCloudUpdate: (cloudJobs) {
+              if (mounted) {
+                setState(() {
+                  jobs = cloudJobs;
+                });
+              }
+            },
+          ).then((loadedJobs) {
             if (mounted) {
               setState(() {
                 jobs = loadedJobs;
@@ -408,7 +472,15 @@ class _MyAppState extends State<MyApp> {
             }
           }));
           
-          futures.add(FirebaseIntegrationService.loadPriceBook().then((loadedPriceBook) {
+          futures.add(FirebaseIntegrationService.loadPriceBook(
+            onCloudUpdate: (cloudPriceBook) {
+              if (mounted) {
+                setState(() {
+                  priceBook = cloudPriceBook;
+                });
+              }
+            },
+          ).then((loadedPriceBook) {
             if (mounted) {
               setState(() {
                 priceBook = loadedPriceBook;
@@ -417,7 +489,7 @@ class _MyAppState extends State<MyApp> {
           }));
           
           await Future.wait(futures);
-          print('✅ All data loaded successfully');
+          print('✅ Local data loaded instantly; cloud sync continuing in background');
         } catch (e) {
           print('❌ Error initializing Firebase integration: $e');
         }
@@ -836,8 +908,11 @@ class _MyAppState extends State<MyApp> {
       customers.removeWhere((c) => c.id == id);
     });
     
-    // Save all customers to reflect removal
-    FirebaseIntegrationService.savePriceBook(priceBook).catchError((e) {
+    // Delete the customer locally and from Firestore. Previously this
+    // incorrectly called savePriceBook() instead, so deleted customers
+    // (including duplicates) were never actually removed from
+    // customers.json or the cloud, and would reappear after the next sync.
+    FirebaseIntegrationService.deleteCustomer(id).catchError((e) {
       print('❌ Error removing customer: $e');
     });
   }
@@ -1051,6 +1126,8 @@ class _MyAppState extends State<MyApp> {
             ),
         '/jobs': (_) => JobsScreen(
               customers: customers,
+              jobs: jobs,
+              priceBook: priceBook,
               onAdd: _addCustomer,
               onUpdate: _updateCustomer,
               onRemove: _removeCustomer,

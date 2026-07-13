@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../models/todo_item.dart';
 import 'package:uuid/uuid.dart';
+import 'demo_mode_service.dart';
 
 /// Service for managing the to-do list with persistent storage
 class ToDoListService {
@@ -17,6 +18,12 @@ class ToDoListService {
 
   /// Load all to-do items from storage
   static Future<List<ToDoItem>> getAllItems() async {
+    if (DemoModeService.instance.isDemoMode) {
+      final items = List<ToDoItem>.from(DemoModeService.instance.todos);
+      _sortItems(items);
+      return items;
+    }
+
     if (_cachedItems != null) {
       return _cachedItems!;
     }
@@ -39,7 +46,18 @@ class ToDoListService {
       // 4. By priority (high, medium, low)
       // 5. By due date
       // 6. By creation date (newest first)
-      _cachedItems!.sort((a, b) {
+      _sortItems(_cachedItems!);
+      
+      return _cachedItems!;
+    } catch (e) {
+      print('Error loading to-do items: $e');
+      _cachedItems = [];
+      return [];
+    }
+  }
+
+  static void _sortItems(List<ToDoItem> items) {
+    items.sort((a, b) {
         // Incomplete first
         if (a.isCompleted != b.isCompleted) {
           return a.isCompleted ? 1 : -1;
@@ -77,13 +95,6 @@ class ToDoListService {
         
         return b.createdDate.compareTo(a.createdDate);
       });
-      
-      return _cachedItems!;
-    } catch (e) {
-      print('Error loading to-do items: $e');
-      _cachedItems = [];
-      return [];
-    }
   }
 
   /// Save all items to storage
@@ -113,7 +124,6 @@ class ToDoListService {
     Duration? estimatedTime,
     List<String> tags = const [],
   }) async {
-    final items = await getAllItems();
     const uuid = Uuid();
     final newItem = ToDoItem(
       id: uuid.v4(),
@@ -132,6 +142,14 @@ class ToDoListService {
       estimatedTime: estimatedTime,
       tags: tags,
     );
+
+    if (DemoModeService.instance.isDemoMode) {
+      DemoModeService.instance.todos.add(newItem);
+      await DemoModeService.instance.persistCurrentSnapshot();
+      return newItem;
+    }
+
+    final items = await getAllItems();
     items.add(newItem);
     await _saveItems(items);
     return newItem;
@@ -139,6 +157,16 @@ class ToDoListService {
 
   /// Update an existing to-do item
   static Future<void> updateItem(ToDoItem item) async {
+    if (DemoModeService.instance.isDemoMode) {
+      final todos = DemoModeService.instance.todos;
+      final index = todos.indexWhere((i) => i.id == item.id);
+      if (index != -1) {
+        todos[index] = item;
+        await DemoModeService.instance.persistCurrentSnapshot();
+      }
+      return;
+    }
+
     final items = await getAllItems();
     final index = items.indexWhere((i) => i.id == item.id);
     if (index != -1) {
@@ -155,12 +183,21 @@ class ToDoListService {
 
   /// Toggle completion status of an item
   static Future<void> toggleItem(ToDoItem item) async {
+    if (DemoModeService.instance.isDemoMode) {
+      await DemoModeService.instance.toggleTodo(item.id);
+      return;
+    }
     final updatedItem = item.copyWith(isCompleted: !item.isCompleted);
     await updateItem(updatedItem);
   }
 
   /// Delete a to-do item
   static Future<void> deleteItem(String itemId) async {
+    if (DemoModeService.instance.isDemoMode) {
+      DemoModeService.instance.todos.removeWhere((item) => item.id == itemId);
+      await DemoModeService.instance.persistCurrentSnapshot();
+      return;
+    }
     final items = await getAllItems();
     items.removeWhere((item) => item.id == itemId);
     await _saveItems(items);

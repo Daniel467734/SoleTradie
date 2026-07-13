@@ -31,7 +31,7 @@ class CustomerService {
       // Only if local is empty, try cloud
       if (FirestoreService.isAuthenticated) {
         print('📡 No local customers, trying cloud...');
-        final cloudItems = await FirestoreService.getCustomers(limit: 1000);
+        final cloudItems = await FirestoreService.getCustomers();
         if (cloudItems.isNotEmpty) {
           print('☁️ Loaded ${cloudItems.length} customers from cloud');
           await _saveToLocal(cloudItems);
@@ -160,7 +160,7 @@ class CustomerService {
     if (!FirestoreService.isAuthenticated) return;
     
     try {
-      final cloudItems = await FirestoreService.getCustomers(limit: 1000);
+      final cloudItems = await FirestoreService.getCustomers();
       if (cloudItems.isNotEmpty && cloudItems.length != (_cache?.length ?? 0)) {
         await _saveToLocal(cloudItems);
         _cache = cloudItems;

@@ -1,12 +1,6 @@
-import 'package:isar/isar.dart';
-
-part 'sync_customer.g.dart';
-
-@collection
 class SyncCustomer {
-  Id? id;
-  
-  @Index()
+  int? id;
+
   late String customerId; // External customer ID
   
   late String name;

@@ -1,6 +1,5 @@
 import 'package:get_it/get_it.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import '../services/local_database.dart';
 import '../services/price_book_local_data_source.dart';
 import '../services/customer_local_data_source.dart';
 import '../services/repository.dart';
@@ -13,9 +12,6 @@ import '../models/sync_customer.dart';
 final GetIt serviceLocator = GetIt.instance;
 
 Future<void> setupServiceLocator() async {
-  // Initialize database
-  await LocalDatabase.instance;
-  
   // Register data sources
   serviceLocator.registerLazySingleton<PriceBookLocalDataSource>(
     () => PriceBookLocalDataSource(),

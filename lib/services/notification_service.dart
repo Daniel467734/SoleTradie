@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/job.dart';
+import 'email_service.dart';
 
 @pragma('vm:entry-point')
 void callbackDispatcher() {
@@ -9,6 +14,11 @@ void callbackDispatcher() {
     switch (task) {
       case "checkOverdueInvoices":
         await NotificationService._checkOverdueInvoicesBackground();
+        // Also retry any emails that were interrupted mid-send while the
+        // app was backgrounded/killed, so they always eventually go out.
+        try {
+          await retryPendingEmails();
+        } catch (_) {}
         break;
     }
     return Future.value(true);
@@ -44,6 +54,93 @@ class NotificationService {
         requiresStorageNotLow: false,
       ),
     );
+
+    await _initializePushNotifications();
+  }
+
+  // ==========================================================================
+  // Push notifications (FCM) - used for the "New customer added: {name}"
+  // alert when a customer submits the public customer-intake web form
+  // (see functions/src/index.ts's submitCustomerForm and
+  // public/new-customer.html). The Cloud Function sends the push to every
+  // token registered under users/{uid}/fcmTokens/{token}.
+  // ==========================================================================
+
+  /// Requests notification permission, registers this device's FCM token
+  /// against the signed-in user in Firestore, and sets up a listener so the
+  /// token stays up to date if it's ever rotated/refreshed by the OS.
+  static Future<void> _initializePushNotifications() async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+
+      // iOS/Android 13+ require an explicit permission request.
+      await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      await _registerCurrentToken();
+
+      // Keep the stored token fresh if the OS rotates it.
+      messaging.onTokenRefresh.listen((_) {
+        _registerCurrentToken();
+      });
+
+      // Foreground messages don't show a system notification banner by
+      // default - listen for them so a "customer added" push while the
+      // app is open still surfaces to the user via a stored notification
+      // (picked up by NotificationButton the same way overdue-invoice
+      // alerts are).
+      FirebaseMessaging.onMessage.listen((message) {
+        final title = message.notification?.title;
+        final body = message.notification?.body;
+        if (title != null && body != null) {
+          _storeGenericNotification('$title: $body');
+        }
+      });
+    } catch (e) {
+      // Push notifications are a nice-to-have - never block app startup
+      // on failures here (e.g. permission denied, no Firebase project
+      // configured for messaging yet).
+      print('⚠️ Failed to initialize push notifications: $e');
+    }
+  }
+
+  /// Registers (or re-registers) this device's current FCM token against
+  /// the signed-in user's `users/{uid}/fcmTokens/{token}` document.
+  static Future<void> _registerCurrentToken() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final token = await FirebaseMessaging.instance.getToken();
+    if (token == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users/${user.uid}/fcmTokens')
+          .doc(token)
+          .set({
+        'registeredAt': FieldValue.serverTimestamp(),
+        'platform': defaultTargetPlatform.toString(),
+      });
+    } catch (e) {
+      print('⚠️ Failed to register FCM token: $e');
+    }
+  }
+
+  /// Call after sign-in completes (once FirebaseAuth.currentUser is
+  /// available) to make sure this device's token is registered even if
+  /// [initialize] ran before the user had signed in.
+  static Future<void> registerFcmTokenForCurrentUser() => _registerCurrentToken();
+
+  static Future<void> _storeGenericNotification(String message) async {
+    final prefs = await SharedPreferences.getInstance();
+    final notifications = prefs.getStringList('overdue_notifications') ?? [];
+    if (!notifications.contains(message)) {
+      notifications.add(message);
+      await prefs.setStringList('overdue_notifications', notifications);
+    }
   }
   
   /// Background task to check for overdue invoices

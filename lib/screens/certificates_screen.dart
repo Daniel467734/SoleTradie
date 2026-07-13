@@ -7,6 +7,7 @@ import '../models/certificate.dart';
 import '../models/job.dart';
 import '../models/customer.dart';
 import '../models/estimate_version.dart';
+import '../services/demo_mode_service.dart';
 
 class CertificatesScreen extends StatefulWidget {
   final List<Job> jobs;
@@ -513,8 +514,12 @@ class _CertificatesScreenState extends State<CertificatesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Certificates'),
-        backgroundColor: Colors.indigo.shade700,
+        title: Text(DemoModeService.instance.isDemoMode
+            ? 'Certificates (Demo Mode)'
+            : 'Certificates'),
+        backgroundColor: DemoModeService.instance.isDemoMode
+            ? Colors.deepPurple
+            : Colors.indigo.shade700,
         foregroundColor: Colors.white,
         actions: [
           IconButton(

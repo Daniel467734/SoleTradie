@@ -6,6 +6,55 @@
   "storage": {
     "rules": "storage.rules"
   },
+  "hosting": [
+    {
+      "target": "marketing",
+      "public": "public",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "/api/submitCustomerForm",
+          "function": {
+            "functionId": "submitCustomerForm",
+            "region": "australia-southeast1"
+          }
+        },
+        {
+          "source": "/api/submitWebsiteContactForm",
+          "function": {
+            "functionId": "submitWebsiteContactForm",
+            "region": "australia-southeast1"
+          }
+        },
+        {
+          "source": "/api/testAndSaveSmtpSettings",
+          "function": {
+            "functionId": "testAndSaveSmtpSettings",
+            "region": "australia-southeast1"
+          }
+        }
+      ]
+    },
+    {
+      "target": "app",
+      "public": "build/web",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
+    }
+  ],
   "functions": [
     {
       "source": "functions",

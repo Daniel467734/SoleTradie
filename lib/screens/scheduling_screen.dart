@@ -4,6 +4,7 @@ import '../models/customer.dart';
 import 'job_details_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import '../services/demo_mode_service.dart';
 
 class SchedulingScreen extends StatefulWidget {
   final List<Job> jobs;
@@ -433,7 +434,11 @@ class _SchedulingScreenState extends State<SchedulingScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Scheduling'),
+        title: Text(DemoModeService.instance.isDemoMode
+            ? 'Scheduling (Demo Mode)'
+            : 'Scheduling'),
+        backgroundColor:
+            DemoModeService.instance.isDemoMode ? Colors.deepPurple : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.today),

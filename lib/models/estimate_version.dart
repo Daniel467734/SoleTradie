@@ -25,6 +25,13 @@ class EstimateVersion {
   double? depositPercentage;
   bool isDepositPercentage;
 
+  /// How this invoice was marked paid: 'manual' or 'xero'. See
+  /// `Invoice.paidVia` in `invoice.dart` for the full explanation - this
+  /// mirrors that field on the EstimateVersion side since the invoices
+  /// list rendered on JobDetailsScreen/InvoicesScreen is actually
+  /// `job.invoiceVersions` (EstimateVersions), not `Invoice` objects.
+  String paidVia;
+
   EstimateVersion({
     this.id,
     this.type,
@@ -49,6 +56,7 @@ class EstimateVersion {
     this.depositAmount,
     this.depositPercentage,
     this.isDepositPercentage = false,
+    this.paidVia = 'manual',
   });
 
   // Add fromJson/toJson if needed for persistence
@@ -76,6 +84,7 @@ class EstimateVersion {
         isDepositPercentage: json['isDepositPercentage'] ?? false,
         documentNumber: json['documentNumber'], // <-- Add this line
         builderBuildId: json['builderBuildId'], // <-- Add this line
+        paidVia: json['paidVia'] ?? 'manual',
       );
 
   Map<String, dynamic> toJson() => {
@@ -102,6 +111,7 @@ class EstimateVersion {
         'isDepositPercentage': isDepositPercentage,
         'documentNumber': documentNumber, // <-- Add this line
         'builderBuildId': builderBuildId, // <-- Add this line
+        'paidVia': paidVia,
       };
 }
 

@@ -14,6 +14,7 @@ import 'pricebook_extensive_screen.dart';
 import 'settings_screen.dart';
 import 'Invoices_Screen.dart';
 import 'certificates_screen.dart';
+import 'file_library_screen.dart';
 // import 'offline_data_screen.dart'; // temporarily disabled for testing
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/notification_service.dart';
@@ -163,16 +164,22 @@ class _DashboardScreenState extends State<DashboardScreen> with RouteAware {
   }
 
   void _copyCustomerFormLink(BuildContext context) {
-    // Create a URL that works both locally and in production
-    // For development: can use localhost or your local IP
-    // For production: replace with your actual domain
-    const baseUrl =
-        'https://your-app-domain.com'; // Replace with your actual domain
-    // Alternative for local testing: 'http://localhost:8080' or 'http://your-local-ip:8080'
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to generate your customer form link.'),
+        ),
+      );
+      return;
+    }
 
-    final customerFormUrl = '$baseUrl/#/customer-form';
+    final customerFormUrl =
+        'https://soletradie-ab850.web.app/new-customer.html?u=$uid';
+    final message =
+        'Hello, please follow this link to fill in your details\n$customerFormUrl';
 
-    Clipboard.setData(ClipboardData(text: customerFormUrl));
+    Clipboard.setData(ClipboardData(text: message));
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -183,7 +190,7 @@ class _DashboardScreenState extends State<DashboardScreen> with RouteAware {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'Customer form link copied to clipboard!\nShare this link with customers to collect their details.',
+                'Customer form message copied to clipboard!\nShare it with customers to collect their details.',
                 style:
                     TextStyle(color: Theme.of(context).colorScheme.onPrimary),
               ),
@@ -384,6 +391,8 @@ class _DashboardScreenState extends State<DashboardScreen> with RouteAware {
                       MaterialPageRoute(
                         builder: (_) => JobsScreen(
                           customers: customers,
+                          jobs: jobs,
+                          priceBook: priceBook,
                           onAdd: (customer) {},
                           onUpdate: (customer) {},
                           onRemove: (customerId) {},
@@ -495,6 +504,23 @@ class _DashboardScreenState extends State<DashboardScreen> with RouteAware {
           const SizedBox(height: 8),
           Row(
             children: [
+              Expanded(
+                child: _DashboardButton(
+                  icon: Icons.folder_special,
+                  label: 'File Library',
+                  color: buttonBg,
+                  textColor: buttonText,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const FileLibraryScreen(),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: _DashboardButton(
                   icon: Icons.people,

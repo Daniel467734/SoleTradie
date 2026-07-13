@@ -440,6 +440,10 @@ class XeroInvoiceRepositoryImpl implements XeroInvoiceRepository {
       if (invoice == null || invoice.isPaid) return false;
 
       invoice.isPaid = true;
+      // Distinguish this from a manual "Mark as Paid" tap in-app, so the
+      // UI can show "Paid (Xero)" / bank-reconciled invoices differently
+      // from ones the user manually marked paid themselves.
+      invoice.paidVia = 'xero';
       await FirestoreService.saveJob(job);
       return true;
     } catch (e) {

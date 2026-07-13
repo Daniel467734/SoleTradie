@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Contact Us</title>
+<style>
+  :root {
+    --primary: #2196F3;
+    --primary-dark: #1769aa;
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #222;
+    --muted: #666;
+    --error: #d32f2f;
+    --success: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    /* Extra bottom padding so that on mobile, when the on-screen keyboard
+       opens, there's enough room to scroll the currently-focused field
+       above the keyboard instead of it being covered/cut off. */
+    padding: 24px 16px calc(24px + 40vh);
+  }
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    max-width: 480px;
+    width: 100%;
+    padding: 28px 24px 32px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 6px;
+  }
+  p.subtitle {
+    color: var(--muted);
+    margin: 0 0 24px;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 16px 0 6px;
+    color: #444;
+  }
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  textarea {
+    width: 100%;
+    padding: 12px 14px;
+    font-size: 15px;
+    border: 1px solid #d5d5d5;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color 0.15s;
+    background: #fff;
+    font-family: inherit;
+  }
+  textarea {
+    resize: vertical;
+    min-height: 100px;
+  }
+  input:focus,
+  textarea:focus {
+    border-color: var(--primary);
+  }
+  .address-wrap {
+    position: relative;
+  }
+  .address-results {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    background: #fff;
+    border: 1px solid #d5d5d5;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    max-height: 220px;
+    overflow-y: auto;
+    z-index: 10;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.08);
+    display: none;
+  }
+  .address-results div {
+    padding: 10px 14px;
+    font-size: 14px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .address-results div:last-child { border-bottom: none; }
+  .address-results div:hover,
+  .address-results div.active {
+    background: #eef6fd;
+  }
+  .address-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+  button {
+    width: 100%;
+    margin-top: 26px;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--primary);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:disabled {
+    background: #9fc9ec;
+    cursor: not-allowed;
+  }
+  button:not(:disabled):hover {
+    background: var(--primary-dark);
+  }
+  .message {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    display: none;
+  }
+  .message.error {
+    background: #fdecea;
+    color: var(--error);
+    display: block;
+  }
+  .message.success {
+    background: #eaf6ec;
+    color: var(--success);
+    display: block;
+  }
+  .success-screen {
+    text-align: center;
+    padding: 24px 0;
+  }
+  .success-screen .check {
+    font-size: 48px;
+    color: var(--success);
+    margin-bottom: 12px;
+  }
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255,255,255,0.5);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div id="formView">
+      <h1>Get in Touch</h1>
+      <p class="subtitle">Fill in your details and message below and we'll get back to you as soon as possible.</p>
+
+      <form id="contactForm" autocomplete="off">
+        <label for="firstName">First Name</label>
+        <input type="text" id="firstName" name="firstName" required />
+
+        <label for="lastName">Last Name</label>
+        <input type="text" id="lastName" name="lastName" required />
+
+        <label for="address">Address</label>
+        <div class="address-wrap">
+          <input type="text" id="address" name="address" placeholder="Start typing your address..." required autocomplete="off" />
+          <div class="address-results" id="addressResults"></div>
+        </div>
+        <div class="address-hint">Start typing and select your address from the list.</div>
+
+        <label for="townCity">Town/City</label>
+        <input type="text" id="townCity" name="townCity" required />
+
+        <label for="email">Email Address</label>
+        <input type="email" id="email" name="email" required />
+
+        <label for="phone">Phone Number</label>
+        <input type="tel" id="phone" name="phone" required />
+
+        <label for="message">Message</label>
+        <textarea id="message" name="message" placeholder="Tell us a bit about what you need..." required></textarea>
+
+        <button type="submit" id="submitBtn">Send Message</button>
+
+        <div class="message" id="message-el"></div>
+      </form>
+    </div>
+
+    <div class="success-screen" id="successView" style="display:none;">
+      <div class="check">&#10003;</div>
+      <h1>Thanks!</h1>
+      <p class="subtitle">Your message has been sent. We'll be in touch soon.</p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const uid = params.get('u') || params.get('uid') || '';
+
+  const form = document.getElementById('contactForm');
+  const submitBtn = document.getElementById('submitBtn');
+  const messageEl = document.getElementById('message-el');
+  const addressInput = document.getElementById('address');
+  const townCityInput = document.getElementById('townCity');
+  const addressResults = document.getElementById('addressResults');
+
+  if (!uid) {
+    document.getElementById('formView').innerHTML =
+      '<h1>Get in Touch</h1>' +
+      '<p class="subtitle">This link is missing some information, so we can\'t show the contact form right now. ' +
+      'Please ask for a fresh link and try again.</p>';
+    return;
+  }
+
+  let searchTimeout = null;
+  let activeIndex = -1;
+  let currentResults = [];
+
+  function showMessage(text, type) {
+    messageEl.textContent = text;
+    messageEl.className = 'message ' + type;
+  }
+
+  function clearMessage() {
+    messageEl.className = 'message';
+    messageEl.textContent = '';
+  }
+
+  // ---------------------------------------------------------------------
+  // Mobile keyboard handling: when an input/textarea gains focus, the
+  // on-screen keyboard can cover it (especially fields lower down the
+  // form like phone/message). Scroll the focused field into the upper
+  // part of the visible viewport shortly after focus (giving the
+  // keyboard time to open first) so it's never hidden underneath it.
+  // ---------------------------------------------------------------------
+  const formFields = form.querySelectorAll('input, textarea');
+  formFields.forEach(function (field) {
+    field.addEventListener('focus', function () {
+      setTimeout(function () {
+        field.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Address autocomplete: tries the free NZ LINZ address API first, and
+  // falls back to OpenStreetMap Nominatim - the same two providers the
+  // Flutter app itself uses (see address_search_service.dart).
+  // ---------------------------------------------------------------------
+  async function searchLinz(query) {
+    const url = 'https://api.linz.govt.nz/v1/search?q=' + encodeURIComponent(query) + '&count=6&format=json';
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error('LINZ error ' + res.status);
+    const data = await res.json();
+    const features = data.features || [];
+    return features.map((f) => {
+      const props = f.properties || {};
+      const houseNumber = (props.house_number || props.number || '').toString();
+      const street = props.street_name || props.road || props.thoroughfare || '';
+      const city = props.city || props.town || '';
+      const suburb = props.suburb_locality || props.suburb || '';
+      let address = '';
+      if (houseNumber && street) {
+        address = houseNumber + ' ' + street;
+        if (city) address += ', ' + city;
+        else if (suburb) address += ', ' + suburb;
+      } else {
+        address = props.full_address || props.address || props.display_name || '';
+      }
+      return address;
+    }).filter(Boolean);
+  }
+
+  async function searchNominatim(query) {
+    const url = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(query) +
+      '&format=json&limit=6&addressdetails=1&countrycodes=nz';
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error('Nominatim error ' + res.status);
+    const data = await res.json();
+    return data.map((item) => {
+      const addr = item.address || {};
+      const houseNumber = addr.house_number || '';
+      const road = addr.road || addr.residential || addr.pedestrian || '';
+      const suburb = addr.suburb || addr.neighbourhood || '';
+      const city = addr.city || addr.town || addr.village || '';
+      let address = '';
+      if (houseNumber && road) {
+        address = houseNumber + ' ' + road;
+        if (city) address += ', ' + city;
+        else if (suburb) address += ', ' + suburb;
+      } else if (road) {
+        address = road;
+        if (city) address += ', ' + city;
+        else if (suburb) address += ', ' + suburb;
+      } else {
+        address = item.display_name || '';
+      }
+      return address;
+    }).filter(Boolean);
+  }
+
+  async function performAddressSearch(query) {
+    let results = [];
+    try {
+      results = await searchLinz(query);
+    } catch (e) {
+      results = [];
+    }
+    if (results.length === 0) {
+      try {
+        results = await searchNominatim(query);
+      } catch (e) {
+        results = [];
+      }
+    }
+    return results;
+  }
+
+  function renderResults(results) {
+    currentResults = results;
+    activeIndex = -1;
+    if (results.length === 0) {
+      addressResults.style.display = 'none';
+      addressResults.innerHTML = '';
+      return;
+    }
+    addressResults.innerHTML = results.map(function (addr, i) {
+      return '<div data-index="' + i + '">' + addr.replace(/</g, '&lt;') + '</div>';
+    }).join('');
+    addressResults.style.display = 'block';
+
+    Array.from(addressResults.children).forEach(function (child) {
+      child.addEventListener('click', function () {
+        const idx = parseInt(child.getAttribute('data-index'), 10);
+        selectAddress(currentResults[idx]);
+      });
+    });
+  }
+
+  function selectAddress(addr) {
+    // Some geocoder results drop the house number (especially unit-style
+    // numbers like "22b") when they can't find an exact match and fall
+    // back to a road-only result. If the user's typed query started with
+    // a number that isn't already present in the chosen address, prepend
+    // it so we never lose what they actually searched for.
+    const typed = addressInput.value.trim();
+    const numberMatch = typed.match(/^(\d+[a-zA-Z]?)\b/);
+    let finalAddr = addr;
+    if (numberMatch) {
+      const typedNumber = numberMatch[1];
+      const addrStartsWithNumber = new RegExp('^' + typedNumber + '\\b', 'i').test(addr.trim());
+      if (!addrStartsWithNumber) {
+        finalAddr = typedNumber + ' ' + addr;
+      }
+    }
+
+    // The geocoder results are formatted as "street address, city/suburb".
+    // Split that so the street portion goes in the Address field and the
+    // city/suburb portion goes in the Town/City field, rather than
+    // dumping everything into one field.
+    const commaIndex = finalAddr.indexOf(',');
+    if (commaIndex !== -1) {
+      addressInput.value = finalAddr.slice(0, commaIndex).trim();
+      const cityPart = finalAddr.slice(commaIndex + 1).trim();
+      if (cityPart && !townCityInput.value.trim()) {
+        townCityInput.value = cityPart;
+      }
+    } else {
+      addressInput.value = finalAddr;
+    }
+
+    addressResults.style.display = 'none';
+    addressResults.innerHTML = '';
+  }
+
+  addressInput.addEventListener('input', function () {
+    const query = addressInput.value.trim();
+    if (searchTimeout) clearTimeout(searchTimeout);
+    if (query.length < 3) {
+      addressResults.style.display = 'none';
+      return;
+    }
+    searchTimeout = setTimeout(async function () {
+      const results = await performAddressSearch(query);
+      renderResults(results);
+    }, 350);
+  });
+
+  addressInput.addEventListener('keydown', function (e) {
+    if (addressResults.style.display !== 'block') return;
+    const children = Array.from(addressResults.children);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, children.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+    } else if (e.key === 'Enter') {
+      if (activeIndex >= 0 && currentResults[activeIndex]) {
+        e.preventDefault();
+        selectAddress(currentResults[activeIndex]);
+      }
+      return;
+    } else {
+      return;
+    }
+    children.forEach(function (c, i) {
+      c.classList.toggle('active', i === activeIndex);
+    });
+  });
+
+  document.addEventListener('click', function (e) {
+    if (!addressResults.contains(e.target) && e.target !== addressInput) {
+      addressResults.style.display = 'none';
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Form submission
+  // ---------------------------------------------------------------------
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    clearMessage();
+
+    const payload = {
+      uid: uid,
+      firstName: document.getElementById('firstName').value.trim(),
+      lastName: document.getElementById('lastName').value.trim(),
+      address: addressInput.value.trim(),
+      townCity: townCityInput.value.trim(),
+      email: document.getElementById('email').value.trim(),
+      phone: document.getElementById('phone').value.trim(),
+      message: document.getElementById('message').value.trim(),
+    };
+
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span>Sending...';
+
+    try {
+      const res = await fetch('/api/submitWebsiteContactForm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(function () { return {}; });
+
+      if (res.ok && data.success) {
+        document.getElementById('formView').style.display = 'none';
+        document.getElementById('successView').style.display = 'block';
+      } else {
+        showMessage(data.error || 'Something went wrong. Please try again.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Send Message';
+      }
+    } catch (err) {
+      showMessage('Could not reach the server. Please check your connection and try again.', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Send Message';
+    }
+  });
+})();
+</script>
+</body>
+</html>

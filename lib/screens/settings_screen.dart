@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:signature/signature.dart';
@@ -11,11 +12,16 @@ import 'package:path_provider/path_provider.dart';
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:http/http.dart' as http;
 import '../services/myob_service.dart';
 import '../services/xero_service.dart';
 import '../services/xero_invoice_repository_impl.dart';
 import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart' show DataType;
+import '../services/demo_mode_service.dart';
+import '../services/firestore_service.dart';
 import 'data_management_screen.dart';
 import 'storage_settings_screen.dart';
 
@@ -40,6 +46,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _smtpPortController = TextEditingController();
   final _reviewLinkController = TextEditingController();
   String? _logoPath;
+  bool _smtpVerified = false;
+  bool _smtpTestingInProgress = false;
+  String? _contactFormLink;
   Color _pdfBannerColor = const Color(0xFF2196F3); // Default blue for PDF banner
   Color _pdfLineItemColor = const Color(0xFF2196F3); // Default blue for line items
   Color _pdfTotalsColor = const Color(0xFF2196F3); // Default blue for totals box
@@ -89,6 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Color _appColor = const Color(0xFF2196F3); // Default blue
   Color _accentColor = const Color(0xFF4CAF50); // Default green accent (secondary colour used app-wide for highlights/success)
   String _selectedCountry = 'New Zealand'; // Default country for address search
+  bool _isDemoMode = DemoModeService.instance.isDemoMode;
 
   @override
   void initState() {
@@ -100,6 +110,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
+      if (DemoModeService.instance.isDemoMode) {
+        // DEMO MODE: show the mock company profile instead of real settings.
+        final profile = DemoModeService.instance.companyProfile;
+        _companyNameController.text = profile['companyName'] ?? '';
+        _gstNumberController.text = profile['gstNumber'] ?? '';
+        _companyAddressController.text = profile['address'] ?? '';
+        _bankDetailsController.text = 'Demo Bank · 00-0000-0000000-00';
+        _mainEmailController.text = profile['email'] ?? '';
+        _secondaryEmailController.text = '';
+        _smtpEmailController.text = profile['email'] ?? '';
+        _smtpPasswordController.text = '';
+        _smtpServerController.text = '';
+        _smtpPortController.text = '587';
+        _reviewLinkController.text = '';
+        _logoPath = null;
+        return;
+      }
       // Company Settings
       _companyNameController.text = prefs.getString('company_name') ?? '';
       _gstNumberController.text = prefs.getString('gst_number') ?? '';
@@ -113,6 +140,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _smtpPortController.text = prefs.getString('smtp_port') ?? '587';
       _reviewLinkController.text = prefs.getString('review_link') ?? '';
       _logoPath = prefs.getString('company_logo_path');
+      _smtpVerified = prefs.getBool('smtp_verified') ?? false;
+      final uid = FirestoreService.currentUserId;
+      if (_smtpVerified && uid != null) {
+        _contactFormLink = 'https://soletradie-ab850.web.app/contact.html?u=$uid';
+      } else {
+        _contactFormLink = null;
+      }
       
       // Accounting Integration Settings
       _myobEnabled = prefs.getBool('myob_enabled') ?? false;
@@ -175,7 +209,130 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return fixed;
   }
 
+  Future<void> _testAndSaveSmtpSettings() async {
+    final email = _smtpEmailController.text.trim();
+    final password = _smtpPasswordController.text.trim();
+    final server = _fixSmtpServer(_smtpServerController.text);
+    final portText = _smtpPortController.text.trim();
+    final companyName = _companyNameController.text.trim();
+
+    if (email.isEmpty || password.isEmpty || server.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill in your SMTP email, password and server first.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You need to be signed in to verify your email settings.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _smtpTestingInProgress = true;
+    });
+
+    try {
+      final idToken = await user.getIdToken();
+      final port = int.tryParse(portText) ?? 587;
+
+      final res = await http
+          .post(
+            Uri.parse('https://soletradie-ab850.web.app/api/testAndSaveSmtpSettings'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $idToken',
+            },
+            body: jsonEncode({
+              'smtpEmail': email,
+              'smtpPassword': password,
+              'smtpServer': server,
+              'smtpPort': port,
+              'companyName': companyName,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      Map<String, dynamic> data = {};
+      try {
+        data = jsonDecode(res.body) as Map<String, dynamic>;
+      } catch (_) {}
+
+      if (res.statusCode == 200 && data['success'] == true) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('smtp_verified', true);
+        final uid = FirestoreService.currentUserId ?? user.uid;
+        if (mounted) {
+          setState(() {
+            _smtpVerified = true;
+            _contactFormLink = 'https://soletradie-ab850.web.app/contact.html?u=$uid';
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Success! A test email was sent and your website contact form link is ready below.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('smtp_verified', false);
+        if (mounted) {
+          setState(() {
+            _smtpVerified = false;
+            _contactFormLink = null;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(data['error']?.toString() ??
+                  'Could not verify your email settings. Please check them and try again.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not reach the server: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _smtpTestingInProgress = false;
+        });
+      }
+    }
+  }
+
+
   Future<void> _saveSettings() async {
+    if (DemoModeService.instance.isDemoMode) {
+      // DEMO MODE: never persist company/SMTP settings to real storage.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Demo Mode: company settings are mock data and can\'t be saved.'),
+            backgroundColor: Colors.deepPurple,
+          ),
+        );
+      }
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
 
     // Company Settings
@@ -1009,11 +1166,10 @@ Many Thanks
   }
 
   Future<void> _connectToXero() async {
-    if (_xeroClientIdController.text.isEmpty || 
-        _xeroClientSecretController.text.isEmpty) {
+    if (_xeroClientIdController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter Xero Client ID and Secret'),
+          content: Text('Please enter your Xero Client ID'),
           backgroundColor: Colors.red,
         ),
       );
@@ -1039,9 +1195,14 @@ Many Thanks
 
     try {
       final xeroService = XeroService();
+      // Client secret is optional: leave it blank if your Xero app is
+      // registered as a "Mobile or desktop app" (the correct type for
+      // this app) - Xero doesn't issue a secret for that app type, and
+      // the service will automatically use PKCE instead.
+      final secretText = _xeroClientSecretController.text.trim();
       await xeroService.connect(
         clientId: _xeroClientIdController.text.trim(),
-        clientSecret: _xeroClientSecretController.text.trim(),
+        clientSecret: secretText.isEmpty ? null : secretText,
       );
 
       final stored = await XeroService.getStoredCredentials();
@@ -1311,6 +1472,12 @@ Many Thanks
           _buildCompanySettingsCard(),
           
           const SizedBox(height: 24),
+
+          // Customer Intake Form Section
+          _buildSectionHeader('Customer Intake Form', Icons.person_add_alt_1),
+          _buildCustomerIntakeFormCard(),
+
+          const SizedBox(height: 24),
           
           // Personal Settings Section
           _buildSectionHeader('Personal Settings', Icons.person),
@@ -1543,6 +1710,81 @@ Many Thanks
               ),
             ],
           ),
+          const SizedBox(height: 16),
+
+          // Test SMTP + Website Contact Form Link
+          ElevatedButton.icon(
+            icon: _smtpTestingInProgress
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.send),
+            label: Text(_smtpTestingInProgress
+                ? 'Sending test email...'
+                : 'Send Test Email & Enable Website Contact Form'),
+            onPressed: _smtpTestingInProgress ? null : _testAndSaveSmtpSettings,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _appColor,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(double.infinity, 48),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+          if (_smtpVerified && _contactFormLink != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.08),
+                border: Border.all(color: Colors.green.withOpacity(0.4)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: const [
+                      Icon(Icons.check_circle, color: Colors.green, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'Website contact form is ready!',
+                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Share this link on your website so customers can contact you directly:',
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SelectableText(
+                          _contactFormLink!,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy),
+                        tooltip: 'Copy link',
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: _contactFormLink!));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Link copied to clipboard')),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           
           TextField(textCapitalization: TextCapitalization.sentences, 
@@ -1926,7 +2168,11 @@ Many Thanks
                     TextField(textCapitalization: TextCapitalization.sentences, 
                       controller: _xeroClientSecretController,
                       decoration: const InputDecoration(
-                        labelText: 'Xero Client Secret',
+                        labelText: 'Xero Client Secret (optional)',
+                        helperText: 'Leave blank if your Xero app is a '
+                            '"Mobile or desktop app" - Xero doesn\'t issue '
+                            'a secret for that type.',
+                        helperMaxLines: 3,
                         prefixIcon: Icon(Icons.vpn_key),
                         border: OutlineInputBorder(),
                         isDense: true,
@@ -2086,6 +2332,93 @@ Many Thanks
                 ),
             ],
           ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Builds a shareable link to the public customer-intake web form
+  /// (public/new-customer.html, served via Firebase Hosting and backed
+  /// by the submitCustomerForm Cloud Function). The `u` query param
+  /// scopes any submissions straight into this signed-in user's own
+  /// customers collection.
+  String? _customerIntakeFormLink() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return null;
+    return 'https://soletradie-ab850.web.app/new-customer.html?u=$uid';
+  }
+
+  Widget _buildCustomerIntakeFormCard() {
+    final link = _customerIntakeFormLink();
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Send this link to a prospective customer so they can fill in '
+              'their own details (name, address, email, phone). They\'ll be '
+              'added straight to your Customers list, and you\'ll get a '
+              'notification on your phone once they\'ve submitted it.',
+              style: TextStyle(color: Colors.black87),
+            ),
+            const SizedBox(height: 16),
+            if (link == null)
+              const Text(
+                'Sign in to generate your customer intake form link.',
+                style: TextStyle(color: Colors.grey),
+              )
+            else ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        link,
+                        style: const TextStyle(fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 20),
+                      tooltip: 'Copy link',
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: link));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Link copied to clipboard')),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.share),
+                  label: const Text('Share Customer Intake Form'),
+                  onPressed: () {
+                    SharePlus.instance.share(
+                      ShareParams(
+                        text: 'Please fill in your details here: $link',
+                        subject: 'New Customer Details Form',
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -2375,8 +2708,104 @@ Many Thanks
             activeThumbColor: _appColor,
             contentPadding: EdgeInsets.zero,
           ),
-          
-          // Country/Region Setting for Address Search
+
+          const Divider(height: 24),
+
+          // Demo Mode Toggle
+          SwitchListTile(
+            title: const Text('Demo Mode'),
+            subtitle: const Text(
+              'Sandbox mode with fake customers, jobs, invoices & pricebook. Nothing saves to your real data.',
+            ),
+            value: _isDemoMode,
+            onChanged: (val) async {
+              if (val) {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Enable Demo Mode?'),
+                    content: const Text(
+                      'The app will switch to a fully sandboxed demo with fake customers, jobs, invoices, pricebook and scheduling. '
+                      'Nothing you do in Demo Mode will affect your real data, and no emails or documents will actually be sent. '
+                      'You can turn this off again at any time.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Enable Demo Mode'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm != true) return;
+                await DemoModeService.instance.enableDemoMode();
+              } else {
+                await DemoModeService.instance.disableDemoMode();
+              }
+              setState(() => _isDemoMode = val);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(val
+                        ? 'Demo Mode enabled - showing sandbox data only'
+                        : 'Demo Mode disabled - back to your real data'),
+                  ),
+                );
+              }
+            },
+            activeThumbColor: _appColor,
+            contentPadding: EdgeInsets.zero,
+          ),
+          if (_isDemoMode)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  icon: const Icon(Icons.delete_forever, color: Colors.red),
+                  label: const Text('Wipe Demo Data',
+                      style: TextStyle(color: Colors.red)),
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Wipe Demo Data?'),
+                        content: const Text(
+                          'This clears every fake customer, job, invoice, estimate, and pricebook item created in Demo Mode, and reseeds a fresh demo starter set. This cannot be undone.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style:
+                                TextButton.styleFrom(foregroundColor: Colors.red),
+                            child: const Text('Wipe'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm == true) {
+                      await DemoModeService.instance.wipeDemoData();
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text('Demo data wiped and reseeded')),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
+            ),
+
+          const Divider(height: 24),
           const SizedBox(height: 16),
           const Text(
             'Address Search Region',

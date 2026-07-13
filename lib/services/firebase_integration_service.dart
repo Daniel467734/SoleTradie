@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firestore_service.dart';
+import 'job_lazy_load_service.dart';
+import 'delta_sync_service.dart';
 import '../models/customer.dart';
 import '../models/job.dart';
 import '../models/price_book_item.dart';
@@ -45,36 +48,85 @@ class FirebaseIntegrationService {
   
   /// Check if Firebase integration is ready
   static bool get isReady => _isInitialized && FirebaseAuth.instance.currentUser != null;
+
+  /// Wait briefly for Firebase integration to become ready before deciding to
+  /// fall back to local storage. This avoids a race condition on app startup
+  /// where loadJobs()/loadCustomers()/loadPriceBook() run before
+  /// initializeForUser() has finished, which previously caused a silent
+  /// fallback to a stale local cache even though the user was really signed in
+  /// and cloud data was available.
+  static Future<bool> _waitUntilReady({Duration timeout = const Duration(seconds: 5)}) async {
+    if (isReady) return true;
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < timeout) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (isReady) return true;
+    }
+    return isReady;
+  }
   
   // CUSTOMER SYNC METHODS
   
-  /// Load customers with cloud-first approach and local fallback
-  static Future<List<Customer>> loadCustomers() async {
+  // CRITICAL: `main.dart` calls `loadCustomers()` from several places in
+  // quick succession at startup/refresh. Serialize the background cloud
+  // refresh the same way as jobs to avoid concurrent writes to
+  // customers.json.
+  static Future<void>? _inFlightCustomersRefresh;
+
+  /// Load customers local-first for an instant UI, then refresh from the
+  /// cloud in the background. Pass [onCloudUpdate] to be notified (e.g. to
+  /// call setState) once the cloud data has been fetched and merged.
+  /// This avoids the old cloud-first behaviour which could block the UI
+  /// for 30-40+ seconds on a cold Firestore connection.
+  static Future<List<Customer>> loadCustomers({
+    void Function(List<Customer> cloudCustomers)? onCloudUpdate,
+  }) async {
+    final localCustomers = await _loadCustomersFromLocal();
+    print('📱 Loaded ${localCustomers.length} customers from local storage');
+
+    if (_inFlightCustomersRefresh != null) {
+      print('⏳ Cloud customers refresh already in progress - not starting another');
+      return localCustomers;
+    }
+
+    // Kick off the cloud refresh in the background - do not block on it.
+    final refreshFuture = _refreshCustomersFromCloud(
+      localCustomers: localCustomers,
+      onCloudUpdate: onCloudUpdate,
+    );
+    _inFlightCustomersRefresh = refreshFuture;
+    unawaited(refreshFuture.whenComplete(() => _inFlightCustomersRefresh = null));
+
+    return localCustomers;
+  }
+
+  /// Fetches customers from Firestore in the background, merges with local
+  /// storage, and notifies [onCloudUpdate] if the cloud has data.
+  static Future<void> _refreshCustomersFromCloud({
+    required List<Customer> localCustomers,
+    void Function(List<Customer> cloudCustomers)? onCloudUpdate,
+  }) async {
     try {
-      // Try cloud first if authenticated
-      if (isReady) {
-        final cloudCustomers = await FirestoreService.getCustomers(limit: 200);
-        if (cloudCustomers.isNotEmpty) {
-          // Save to local as backup
-          await _saveCustomersToLocal(cloudCustomers);
-          print('✅ Loaded ${cloudCustomers.length} customers from Firebase');
-          return cloudCustomers;
-        }
+      final ready = await _waitUntilReady();
+      if (!ready) {
+        // Not signed in / not ready - if we have local data, try to push
+        // it up once we do become ready is handled elsewhere; nothing more
+        // to do right now.
+        return;
       }
-      
-      // Fallback to local storage
-      final localCustomers = await _loadCustomersFromLocal();
-      
-      // If we have local data and are authenticated, sync to cloud
-      if (localCustomers.isNotEmpty && isReady) {
+
+      final cloudCustomers = await FirestoreService.getCustomers();
+      if (cloudCustomers.isNotEmpty) {
+        await _saveCustomersToLocal(cloudCustomers);
+        print('✅ Synced ${cloudCustomers.length} customers from Firebase');
+        onCloudUpdate?.call(cloudCustomers);
+      } else if (localCustomers.isNotEmpty) {
+        // Cloud is empty but we have local data - push it up so the
+        // cloud becomes the source of truth for next time.
         await syncCustomersToCloud(localCustomers);
       }
-      
-      print('📱 Loaded ${localCustomers.length} customers from local storage');
-      return localCustomers;
     } catch (e) {
-      print('❌ Error loading customers: $e');
-      return [];
+      print('❌ Error refreshing customers from Firebase: $e');
     }
   }
   
@@ -106,53 +158,126 @@ class FirebaseIntegrationService {
       print('❌ Failed to sync customers to Firebase: $e');
     }
   }
-  
-  // JOB SYNC METHODS
-  
-  /// Load jobs with cloud-first approach and local fallback
-  static Future<List<Job>> loadJobs() async {
+
+  /// Delete a customer both locally and from the cloud. Previously
+  /// main.dart's _removeCustomer() only removed the customer from the
+  /// in-memory list and (by mistake) re-saved the price book instead of
+  /// persisting the customer removal anywhere - meaning deleted customers
+  /// (including duplicates) would reappear after the next cloud sync since
+  /// they were never actually deleted from customers.json or Firestore.
+  static Future<void> deleteCustomer(String customerId) async {
     try {
-      // Try cloud first if authenticated
+      final customers = await _loadCustomersFromLocal();
+      customers.removeWhere((c) => c.id == customerId);
+      await _saveCustomersToLocal(customers);
+
       if (isReady) {
-        final cloudJobs = await FirestoreService.getJobs(limit: 100);
-        if (cloudJobs.isNotEmpty) {
-          // Save to local as backup
-          await _saveJobsToLocal(cloudJobs);
-          print('✅ Loaded ${cloudJobs.length} jobs from Firebase');
-          return cloudJobs;
-        }
+        await FirestoreService.deleteCustomer(customerId);
+        print('☁️ Customer $customerId deleted from Firebase');
       }
-      
-      // Fallback to local storage
-      final localJobs = await _loadJobsFromLocal();
-      
-      // If we have local data and are authenticated, sync to cloud
-      if (localJobs.isNotEmpty && isReady) {
-        await syncJobsToCloud(localJobs);
-      }
-      
-      print('📱 Loaded ${localJobs.length} jobs from local storage');
-      return localJobs;
     } catch (e) {
-      print('❌ Error loading jobs: $e');
-      return [];
+      print('❌ Error deleting customer: $e');
+      rethrow;
     }
   }
   
-  /// Save job with automatic cloud sync
+  // JOB SYNC METHODS
+
+  // CRITICAL: `main.dart` calls `loadJobs()` from several places in quick
+  // succession at startup/refresh (auth listener, `_loadDataFallback()`,
+  // `_refreshAppData()`). Each call spawns its own unawaited
+  // `_refreshJobsFromCloud()` in the background. Without serialization,
+  // these raced to read-modify-write the same local `jobs.json`, silently
+  // corrupting/losing builds, attachments and invoices. This lock ensures
+  // only one cloud refresh runs at a time.
+  static Future<void>? _inFlightJobsRefresh;
+
+  /// Load jobs local-first for an instant UI, then refresh from the cloud
+  /// in the background. Pass [onCloudUpdate] to be notified (e.g. to call
+  /// setState) once the cloud data has been fetched and merged.
+  static Future<List<Job>> loadJobs({
+    void Function(List<Job> cloudJobs)? onCloudUpdate,
+  }) async {
+    final localJobs = await _loadJobsFromLocal();
+    print('📱 Loaded ${localJobs.length} jobs from local storage');
+
+    final inFlight = _inFlightJobsRefresh;
+    if (inFlight != null) {
+      print('⏳ Cloud jobs refresh already in progress - not starting another');
+      return localJobs;
+    }
+
+    final refreshFuture = _refreshJobsFromCloud(
+      localJobs: localJobs,
+      onCloudUpdate: onCloudUpdate,
+    );
+    _inFlightJobsRefresh = refreshFuture;
+    unawaited(refreshFuture.whenComplete(() => _inFlightJobsRefresh = null));
+
+    return localJobs;
+  }
+
+  /// Fetches jobs from Firestore in the background using delta sync (only changed jobs),
+  /// merges with local storage, and notifies [onCloudUpdate] if the cloud has data.
+  /// This avoids the OutOfMemoryError by only loading jobs that changed since last sync.
+  static Future<void> _refreshJobsFromCloud({
+    required List<Job> localJobs,
+    void Function(List<Job> cloudJobs)? onCloudUpdate,
+  }) async {
+    try {
+      final ready = await _waitUntilReady();
+      if (!ready) return;
+
+      // Use delta sync to only fetch changed jobs (not all jobs)
+      // This prevents OutOfMemoryError by avoiding loading all nested data at once.
+      // NOTE: DeltaSyncService.syncJobsWithDelta() already persists the
+      // merged result to jobs.json internally - do NOT save again here,
+      // that would be a redundant duplicate write that can race with the
+      // next refresh cycle and corrupt the file.
+      final cloudJobs = await DeltaSyncService.syncJobsWithDelta();
+      if (cloudJobs.isNotEmpty) {
+        print('✅ Synced ${cloudJobs.length} jobs from Firebase (delta sync)');
+        onCloudUpdate?.call(cloudJobs);
+      } else if (localJobs.isNotEmpty) {
+        await syncJobsToCloud(localJobs);
+      }
+    } catch (e) {
+      print('❌ Error refreshing jobs from Firebase: $e');
+    }
+  }
+  
+  /// Save job with automatic cloud sync (using lazy-load service)
   static Future<void> saveJob(Job job) async {
     try {
-      // Save to local storage first (faster)
-      await _saveJobToLocal(job);
+      // Use the lazy-load service which handles both local + cloud sync
+      await JobLazyLoadService.saveJobDetails(job);
       
-      // Sync to cloud if authenticated
-      if (isReady) {
-        await FirestoreService.saveJob(job);
-        print('☁️ Job ${job.title} synced to Firebase');
-      }
+      // Sync invoice PDFs to Firebase Storage using intelligent delta sync
+      // (only uploads PDFs that changed, skips unchanged ones)
+      _syncJobPdfsWithDelta(job).catchError((e) {
+        print('⚠️ Warning: Failed to sync invoice PDFs: $e');
+      });
     } catch (e) {
       print('❌ Error saving job: $e');
       rethrow;
+    }
+  }
+  
+  /// Intelligently sync invoice PDFs - only uploads if file changed (hash-based)
+  static Future<void> _syncJobPdfsWithDelta(Job job) async {
+    // Check if user is authenticated
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      print('⚠️ Not signed in - skipping PDF sync');
+      return;
+    }
+
+    try {
+      // Use DeltaSyncService for intelligent PDF sync
+      // This calculates file hashes and only uploads changed PDFs
+      await DeltaSyncService.syncPdfsWithDelta(job);
+    } catch (e) {
+      print('❌ Error syncing invoice PDFs: $e');
     }
   }
   
@@ -167,37 +292,70 @@ class FirebaseIntegrationService {
       print('❌ Failed to sync jobs to Firebase: $e');
     }
   }
+
+  /// Delete a job both locally and from the cloud.
+  static Future<void> deleteJob(String jobId) async {
+    try {
+      final jobs = await _loadJobsFromLocal();
+      jobs.removeWhere((j) => j.id == jobId);
+      await _saveJobsToLocal(jobs);
+
+      if (isReady) {
+        await FirestoreService.deleteJob(jobId);
+        print('☁️ Job $jobId deleted from Firebase');
+      }
+    } catch (e) {
+      print('❌ Error deleting job: $e');
+      rethrow;
+    }
+  }
   
   // PRICE BOOK SYNC METHODS
   
-  /// Load price book with cloud-first approach and local fallback
-  static Future<List<pb.PriceBookItem>> loadPriceBook() async {
+  /// Load price book local-first for an instant UI, then refresh from the
+  /// cloud in the background. Pass [onCloudUpdate] to be notified (e.g. to
+  /// call setState) once the cloud data has been fetched and merged.
+  static Future<List<pb.PriceBookItem>> loadPriceBook({
+    void Function(List<pb.PriceBookItem> cloudItems)? onCloudUpdate,
+  }) async {
+    final localItems = await _loadPriceBookFromLocal();
+    print('📱 Loaded ${localItems.length} price book items from local storage');
+
+    unawaited(_refreshPriceBookFromCloud(
+      localItems: localItems,
+      onCloudUpdate: onCloudUpdate,
+    ));
+
+    if (localItems.isEmpty) {
+      // No local data at all yet (e.g. very first run) - fall back to a
+      // sample price book so the UI isn't completely empty while we wait
+      // for the background cloud refresh to complete.
+      return _createSamplePriceBook();
+    }
+    return localItems;
+  }
+
+  /// Fetches the price book from Firestore in the background, merges with
+  /// local storage, and notifies [onCloudUpdate] if the cloud has data.
+  static Future<void> _refreshPriceBookFromCloud({
+    required List<pb.PriceBookItem> localItems,
+    void Function(List<pb.PriceBookItem> cloudItems)? onCloudUpdate,
+  }) async {
     try {
-      // Try cloud first if authenticated
-      if (isReady) {
-        final cloudItems = await FirestoreService.getPriceBookItems(limit: 500);
-        if (cloudItems.isNotEmpty) {
-          final pbItems = cloudItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
-          // Save to local as backup
-          await _savePriceBookToLocal(pbItems);
-          print('✅ Loaded ${pbItems.length} price book items from Firebase');
-          return pbItems;
-        }
-      }
-      
-      // Fallback to local storage
-      final localItems = await _loadPriceBookFromLocal();
-      
-      // If we have local data and are authenticated, sync to cloud
-      if (localItems.isNotEmpty && isReady) {
+      final ready = await _waitUntilReady();
+      if (!ready) return;
+
+      final cloudItems = await FirestoreService.getPriceBookItems();
+      if (cloudItems.isNotEmpty) {
+        final pbItems = cloudItems.map((item) => pb.PriceBookItem.fromJson(item.toJson())).toList();
+        await _savePriceBookToLocal(pbItems);
+        print('✅ Synced ${pbItems.length} price book items from Firebase');
+        onCloudUpdate?.call(pbItems);
+      } else if (localItems.isNotEmpty) {
         await syncPriceBookToCloud(localItems);
       }
-      
-      print('📱 Loaded ${localItems.length} price book items from local storage');
-      return localItems;
     } catch (e) {
-      print('❌ Error loading price book: $e');
-      return _createSamplePriceBook();
+      print('❌ Error refreshing price book from Firebase: $e');
     }
   }
   
@@ -291,21 +449,61 @@ class FirebaseIntegrationService {
     try {
       final directory = await getApplicationDocumentsDirectory();
       final file = File('${directory.path}/jobs.json');
+      
       if (await file.exists()) {
-        final jsonString = await file.readAsString();
-        if (jsonString.trim().isNotEmpty) {
-          final List<dynamic> jsonList = jsonDecode(jsonString);
-          final jobs = jsonList.map((e) => Job.fromJson(e)).toList();
-          // Sync invoices for loaded jobs
-          for (final job in jobs) {
-            job.syncInvoices();
+        try {
+          final jsonString = await file.readAsString();
+          if (jsonString.trim().isNotEmpty) {
+            // Try to parse JSON - this will catch truncation errors
+            final List<dynamic> jsonList = jsonDecode(jsonString);
+            final jobs = jsonList.map((e) => Job.fromJson(e)).toList();
+            
+            // Sync invoices for loaded jobs
+            for (final job in jobs) {
+              job.syncInvoices();
+            }
+            
+            print('✅ Loaded ${jobs.length} jobs from local storage (valid JSON)');
+            return jobs;
           }
-          return jobs;
+        } catch (parseError) {
+          // JSON parse error indicates corruption
+          print('⚠️ WARNING: jobs.json is corrupted: $parseError');
+          
+          // Backup corrupted file
+          try {
+            final corruptFile = File('${file.path}.corrupt');
+            await file.copy(corruptFile.path);
+            print('💾 Backed up corrupted jobs.json to jobs.json.corrupt');
+          } catch (backupError) {
+            print('⚠️ Could not backup corrupted file: $backupError');
+          }
+          
+          // Try to load from backup if it exists
+          try {
+            final backupFile = File('${file.path}.backup');
+            if (await backupFile.exists()) {
+              final backupJson = await backupFile.readAsString();
+              if (backupJson.trim().isNotEmpty) {
+                final List<dynamic> jsonList = jsonDecode(backupJson);
+                final jobs = jsonList.map((e) => Job.fromJson(e)).toList();
+                for (final job in jobs) {
+                  job.syncInvoices();
+                }
+                print('✅ Recovered ${jobs.length} jobs from backup');
+                return jobs;
+              }
+            }
+          } catch (backupError) {
+            print('⚠️ Could not load from backup: $backupError');
+          }
         }
       }
     } catch (e) {
-      print('❌ Error loading jobs from local: $e');
+      print('❌ Error accessing jobs file: $e');
     }
+    
+    print('⚠️ No valid local jobs found, will sync from Firebase');
     return [];
   }
   
@@ -314,24 +512,43 @@ class FirebaseIntegrationService {
       final directory = await getApplicationDocumentsDirectory();
       final file = File('${directory.path}/jobs.json');
       final jsonList = jobs.map((job) => job.toJson()).toList();
-      await file.writeAsString(jsonEncode(jsonList));
+      final jsonString = jsonEncode(jsonList);
+      
+      // ATOMIC WRITE: Write to temp file first, verify, then swap
+      final tempFile = File('${file.path}.tmp');
+      await tempFile.writeAsString(jsonString);
+      
+      // Verify the temp file is valid
+      try {
+        final tempContent = await tempFile.readAsString();
+        if (tempContent.isEmpty) {
+          throw Exception('Temp file is empty after write');
+        }
+        
+        // Verify JSON is valid by parsing it
+        jsonDecode(tempContent);
+        
+        // Backup current file before overwriting
+        if (await file.exists()) {
+          try {
+            await file.copy('${file.path}.backup');
+          } catch (e) {
+            print('⚠️ Could not create backup: $e');
+          }
+        }
+        
+        // Atomically swap temp -> final
+        await tempFile.rename(file.path);
+        print('✅ Saved ${jobs.length} jobs to local storage (atomic write)');
+      } catch (verifyError) {
+        // Temp file is bad, delete it
+        try {
+          await tempFile.delete();
+        } catch (_) {}
+        throw verifyError;
+      }
     } catch (e) {
       print('❌ Error saving jobs to local: $e');
-    }
-  }
-  
-  static Future<void> _saveJobToLocal(Job job) async {
-    try {
-      final jobs = await _loadJobsFromLocal();
-      final index = jobs.indexWhere((j) => j.id == job.id);
-      if (index >= 0) {
-        jobs[index] = job;
-      } else {
-        jobs.add(job);
-      }
-      await _saveJobsToLocal(jobs);
-    } catch (e) {
-      print('❌ Error saving job to local: $e');
     }
   }
   
@@ -342,20 +559,43 @@ class FirebaseIntegrationService {
       if (await file.exists()) {
         final jsonString = await file.readAsString();
         if (jsonString.trim().isNotEmpty) {
-          final decoded = jsonDecode(jsonString);
-          final List<dynamic> jsonList;
-          if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
-            jsonList = decoded['items'] as List<dynamic>;
-          } else if (decoded is List<dynamic>) {
-            jsonList = decoded;
-          } else {
-            throw Exception('Unexpected pricebook JSON structure');
+          try {
+            final decoded = jsonDecode(jsonString);
+            final List<dynamic> jsonList;
+            if (decoded is Map<String, dynamic> && decoded.containsKey('items')) {
+              jsonList = decoded['items'] as List<dynamic>;
+            } else if (decoded is List<dynamic>) {
+              jsonList = decoded;
+            } else {
+              throw Exception('Unexpected pricebook JSON structure');
+            }
+            
+            // Validate we got valid items
+            if (jsonList.isEmpty) {
+              print('⚠️ Price book file is empty, using default');
+              return _createSamplePriceBook();
+            }
+            
+            return jsonList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
+          } catch (parseError) {
+            print('⚠️ Price book JSON corrupted: $parseError');
+            // Try to delete the corrupted file and use default
+            try {
+              // Back it up first
+              final backup = File('${directory.path}/price_book.json.corrupt');
+              if (await file.exists()) {
+                await file.rename(backup.path);
+                print('📋 Backed up corrupted price book to: ${backup.path}');
+              }
+            } catch (backupError) {
+              print('⚠️ Could not backup corrupted price book: $backupError');
+            }
+            return _createSamplePriceBook();
           }
-          return jsonList.map((e) => pb.PriceBookItem.fromJson(e)).toList();
         }
       }
     } catch (e) {
-      print('❌ Error loading price book from local: $e');
+      print('⚠️ Error loading price book from local: $e');
     }
     return _createSamplePriceBook();
   }
@@ -363,7 +603,11 @@ class FirebaseIntegrationService {
   static Future<void> _savePriceBookToLocal(List<pb.PriceBookItem> items) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final file = File('${directory.path}/price_book.json');
+      final filePath = '${directory.path}/price_book.json';
+      final file = File(filePath);
+      final tempFile = File('${filePath}.tmp');
+      
+      // Create JSON data
       final jsonList = items.map((item) => item.toJson()).toList();
       final data = {
         'items': jsonList,
@@ -371,7 +615,39 @@ class FirebaseIntegrationService {
         'version': 1,
         'totalItems': jsonList.length,
       };
-      await file.writeAsString(jsonEncode(data));
+      final jsonString = jsonEncode(data);
+      
+      // Write to temporary file first (atomic write pattern)
+      await tempFile.writeAsString(jsonString);
+      
+      // Verify the file was written completely
+      final tempSize = await tempFile.length();
+      if (tempSize == 0 || tempSize < jsonString.length * 0.9) {
+        // Write was incomplete, abort the swap
+        await tempFile.delete();
+        print('⚠️ Price book write incomplete (${tempSize}/${jsonString.length} bytes), aborted swap');
+        return;
+      }
+      
+      // Verify JSON integrity by trying to parse it
+      try {
+        jsonDecode(await tempFile.readAsString());
+      } catch (e) {
+        // JSON is corrupted, delete and abort
+        await tempFile.delete();
+        print('⚠️ Price book JSON is corrupt, aborted save: $e');
+        return;
+      }
+      
+      // Delete old file if it exists
+      if (await file.exists()) {
+        await file.delete();
+      }
+      
+      // Atomically rename temp file to final location
+      await tempFile.rename(filePath);
+      
+      print('✅ Price book saved: ${items.length} items, ${tempSize} bytes');
     } catch (e) {
       print('❌ Error saving price book to local: $e');
     }

@@ -40,6 +40,15 @@ class Invoice {
   bool isArchived; // Add this for compatibility
   final String? filePath; // Add filePath property for PDF storage
 
+  /// How this invoice was marked paid: 'manual' (marked paid by hand in
+  /// the app - e.g. cash/EFT the user has confirmed themselves) or
+  /// 'xero' (reconciled automatically via Xero's bank feed webhook).
+  /// Defaults to 'manual' since that's the original/most common path;
+  /// set to 'xero' by `XeroInvoiceRepositoryImpl.reconcileFromWebhookEvent`.
+  /// Purely informational (e.g. for display as "Marked Paid" vs "Paid"),
+  /// doesn't affect `isPaid`/balance logic.
+  String paidVia;
+
   double get balance => (total - amountPaid).clamp(0.0, double.infinity);
 
   Invoice({
@@ -57,6 +66,7 @@ class Invoice {
     this.emailSent = false, // <-- Add this default
     this.isArchived = false, // <-- Add this default
     this.filePath, // Add filePath parameter
+    this.paidVia = 'manual',
   })  : amount = amount ?? total,
         payments = payments ?? [];
 
@@ -75,6 +85,7 @@ class Invoice {
     bool? emailSent,
     bool? isArchived,
     String? filePath,
+    String? paidVia,
   }) {
     return Invoice(
       id: id ?? this.id,
@@ -91,6 +102,7 @@ class Invoice {
       emailSent: emailSent ?? this.emailSent,
       isArchived: isArchived ?? this.isArchived,
       filePath: filePath ?? this.filePath,
+      paidVia: paidVia ?? this.paidVia,
     );
   }
 
@@ -122,6 +134,7 @@ class Invoice {
         emailSent: json['emailSent'] ?? false,
         isArchived: json['isArchived'] ?? false,
         filePath: json['filePath'],
+        paidVia: json['paidVia'] ?? 'manual',
       );
 
   Map<String, dynamic> toJson() => {
@@ -138,6 +151,7 @@ class Invoice {
         'emailSent': emailSent,
         'isArchived': isArchived,
         'filePath': filePath,
+        'paidVia': paidVia,
       };
 }
 

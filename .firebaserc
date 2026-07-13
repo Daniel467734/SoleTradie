@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "soletradie-ab850"
-  }
+  },
+  "targets": {
+    "soletradie-ab850": {
+      "hosting": {
+        "app": [
+          "soletradie-app"
+        ],
+        "marketing": [
+          "soletradie-ab850"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

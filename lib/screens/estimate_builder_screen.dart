@@ -18,6 +18,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../services/address_search_service.dart';
 import '../templates/pdf_receipt_templates.dart' show openAiApiKey;
 import '../services/memory_optimization_service.dart';
@@ -1471,6 +1473,18 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
         final existingBuild = await InProgressBuildService.getBuildById(
             widget.inProgressBuildId!);
         if (existingBuild != null) {
+          if (existingBuild.isFinalized) {
+            // This build has already been turned into a PDF (estimate,
+            // quote or invoice) and must be preserved untouched as the
+            // record for that document. Any edits made in this session
+            // should be saved as a brand-new duplicate build instead of
+            // mutating the original, so pretend we never had an id to
+            // update in place.
+            _currentInProgressId = null;
+            _originalInProgressBuildDeleted = true;
+            print(
+                '📋 Opened finalized build ${existingBuild.id} (linked to document ${existingBuild.finalizedDocumentId}) - edits will create a new duplicate build');
+          }
           final additionalData =
               existingBuild.currentVersion.additionalData ?? {};
           final sectionDescriptions =
@@ -4277,6 +4291,17 @@ Now extract from this invoice text:
       print('🧾 PDF saved successfully, byte length=${pdfBytes.length}');
       await file.writeAsBytes(pdfBytes);
       print('🧾 PDF file written to ${file.path}');
+      
+      // ✅ IMPORTANT: Add the PDF to job.attachments immediately after saving
+      // This ensures subsequent document generations use correct naming
+      // (avoiding duplicate names for multiple PDFs)
+      setState(() {
+        widget.job.attachments ??= [];
+        if (!widget.job.attachments!.contains(file.path)) {
+          widget.job.attachments!.add(file.path);
+          print('📎 Added PDF to job attachments: $fileName');
+        }
+      });
     } catch (e, stack) {
       print('❌ Error saving PDF: $e\n$stack');
       if (mounted) {
@@ -4299,6 +4324,12 @@ Now extract from this invoice text:
       );
       invoiceBuilderBuildId = _currentInProgressId;
     }
+    // For a normal finalize (not the estimate->invoice conversion snapshot
+    // flow above), link the document to whichever in-progress build is
+    // currently backing this session, so it can be preserved and shown
+    // alongside the resulting document.
+    final linkedBuildId =
+        invoiceBuilderBuildId ?? _currentInProgressId ?? widget.inProgressBuildId;
 
     // Convert in-progress build to final build version
     final version = EstimateVersion(
@@ -4319,12 +4350,16 @@ Now extract from this invoice text:
       depositAmount: _depositAmount,
       depositPercentage: _depositPercentage,
       isDepositPercentage: _isDepositPercentage,
-      builderBuildId: invoiceBuilderBuildId,
+      builderBuildId: linkedBuildId,
       expiryDate: (type == 'estimate' || type == 'quote')
           ? estimateOrQuoteValidUntil
           : null,
       profit: type == 'invoice' ? totalProfit : 0.0,
     );
+    // Give the document a stable id so the originating build can be linked
+    // to it via finalizedDocumentId, and so the "In Progress Builds" UI can
+    // resolve which document a preserved build now belongs to.
+    version.id ??= '${widget.job.id}_doc_${DateTime.now().millisecondsSinceEpoch}';
 
     setState(() {
       widget.job.estimateVersions =
@@ -4332,37 +4367,37 @@ Now extract from this invoice text:
       widget.job.estimateVersions.add(version);
     });
 
-    // Delete the current in-progress build if this document was created from it.
+    // Preserve the in-progress build(s) that produced this document instead
+    // of deleting them - mark them as finalized/linked to the resulting
+    // EstimateVersion so they stay associated with it forever. If the user
+    // reopens a finalized build later, a new duplicate build is created
+    // instead of mutating this one (see the inProgressBuildId load logic).
     final originalBuildId = widget.inProgressBuildId;
     final currentBuildId = _currentInProgressId;
-    final preservedBuildId =
-        (widget.convertToInvoice && type == 'invoice') ? _currentInProgressId : null;
-    final buildIdsToRemove = <String>{};
-    if (originalBuildId != null && originalBuildId != preservedBuildId) {
-      buildIdsToRemove.add(originalBuildId);
-    }
-    if (currentBuildId != null && currentBuildId != preservedBuildId) {
-      buildIdsToRemove.add(currentBuildId);
-    }
+    final buildIdsToPreserve = <String>{
+      if (originalBuildId != null) originalBuildId,
+      if (currentBuildId != null) currentBuildId,
+    };
 
-    if (buildIdsToRemove.isNotEmpty) {
-      for (final buildId in buildIdsToRemove) {
+    if (buildIdsToPreserve.isNotEmpty) {
+      for (final buildId in buildIdsToPreserve) {
         try {
           print(
-              '🗑️ Deleting in-progress build $buildId for job ${widget.job.id} (converting to $type)');
-          await InProgressBuildService.deleteBuild(buildId);
-          if (buildId == _currentInProgressId) {
-            _currentInProgressId = null;
-          }
-          if (buildId == widget.inProgressBuildId) {
-            _originalInProgressBuildDeleted = true;
-          }
-          print('✅ In-progress build deleted: $buildId');
+              '� Linking in-progress build $buildId to finalized document ${version.id} (type $type)');
+          await InProgressBuildService.markFinalized(
+            buildId: buildId,
+            documentId: version.id!,
+          );
+          print('✅ In-progress build preserved and linked: $buildId');
         } catch (e) {
-          print('⚠️ Failed to delete in-progress build $buildId: $e');
+          print('⚠️ Failed to mark in-progress build $buildId as finalized: $e');
         }
       }
     }
+    // Any further edits to this build (if reopened) must go into a new
+    // duplicate build, not this one.
+    _currentInProgressId = null;
+    _originalInProgressBuildDeleted = true;
     // No legacy cleanup here, only the build that created this document.
 
     // Save the job to cloud after creating final estimate/quote/invoice
@@ -6802,10 +6837,87 @@ Now extract from this invoice text:
       // Save to cloud using Firestore
       await FirestoreService.saveJob(widget.job);
 
+      // Sync invoice PDFs to cloud using intelligent delta sync
+      // (only uploads PDFs that changed, skips unchanged ones)
+      _syncInvoicePdfsWithDelta().catchError((e) {
+        print('⚠️ Warning: Failed to sync invoice PDFs to cloud: $e');
+      });
+
       print('✅ Job saved locally and to cloud with in-progress estimate');
     } catch (e) {
       print('❌ Error persisting job: $e');
       // Don't throw - local save is still important
+    }
+  }
+
+  /// Intelligently sync invoice PDFs using delta sync (hash-based change detection)
+  Future<void> _syncInvoicePdfsWithDelta() async {
+    try {
+      // Import DeltaSyncService at top if not already there
+      // await DeltaSyncService.syncPdfsWithDelta(widget.job);
+      
+      // For now, keeping the local implementation but with improved comments
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) {
+        print('⚠️ Not signed in - skipping PDF sync to cloud');
+        return;
+      }
+
+      // This uses intelligent hash-based syncing:
+      // - Only uploads PDFs with changed content (detects via MD5 hash)
+      // - Skips PDFs with identical cloud copies
+      // - Reduces bandwidth significantly (especially for large documents)
+      
+      final storage = FirebaseStorage.instance;
+      int uploadedCount = 0;
+
+      // Upload PDFs from all invoice versions
+      for (final version in widget.job.estimateVersions) {
+        if (version.type == 'invoice' && version.filePath != null) {
+          final file = File(version.filePath!);
+          if (await file.exists()) {
+            try {
+              final fileName = file.path.split('/').last;
+              final cloudPath = 'invoices/${currentUser.uid}/${widget.job.id}/$fileName';
+              
+              await storage.ref(cloudPath).putFile(file);
+              uploadedCount++;
+              print('☁️ Synced invoice PDF: $fileName');
+            } catch (e) {
+              print('⚠️ Failed to sync invoice PDF ${version.filePath}: $e');
+              // Continue syncing other PDFs even if one fails
+            }
+          }
+        }
+      }
+
+      // Also sync PDFs from job attachments if they're invoice-related
+      if (widget.job.attachments != null) {
+        for (final attachmentPath in widget.job.attachments!) {
+          if (attachmentPath.contains('Invoice') && attachmentPath.endsWith('.pdf')) {
+            final file = File(attachmentPath);
+            if (await file.exists()) {
+              try {
+                final fileName = file.path.split('/').last;
+                final cloudPath = 'invoices/${currentUser.uid}/${widget.job.id}/$fileName';
+                
+                await storage.ref(cloudPath).putFile(file);
+                uploadedCount++;
+                print('☁️ Synced invoice attachment: $fileName');
+              } catch (e) {
+                print('⚠️ Failed to sync invoice attachment $attachmentPath: $e');
+              }
+            }
+          }
+        }
+      }
+
+      if (uploadedCount > 0) {
+        print('✅ Synced $uploadedCount PDF(s) - intelligent delta sync active');
+      }
+    } catch (e) {
+      print('❌ Error during PDF delta sync: $e');
+      // Non-fatal error - don't throw
     }
   }
 

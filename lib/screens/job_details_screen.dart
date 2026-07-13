@@ -11,9 +11,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../models/job.dart' as job_model;
+import '../models/invoice.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:flutter/services.dart';
 import '../services/email_service.dart';
+import '../services/demo_mode_service.dart';
 import '../models/estimate_version.dart';
 import '../models/estimate_template.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -27,6 +29,8 @@ import 'coc_form_screen.dart' as coc_form;
 import 'esc_form_screen.dart' as esc_form;
 import '../route_observer.dart';
 import '../services/file_library_service.dart';
+import '../services/pdf_to_build_service.dart';
+import '../services/firebase_integration_service.dart';
 import 'todo_list_screen.dart';
 import 'attachment_viewer_screen.dart';
 
@@ -430,11 +434,20 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
   bool _isBuilderNote(String note) => note.startsWith(_builderNotePrefix);
 
   Future<void> _saveJob() async {
-    try {
-      // Sync invoices before saving
-      widget.job.syncInvoices();
-      widget.job.notes = notes;
+    // Sync invoices/notes onto the in-memory job object either way, so the
+    // UI reflects changes immediately, but Demo Mode jobs must never be
+    // written to the real local file, hybrid storage, cloud, or Xero -
+    // the demo job object already lives inside DemoModeService's
+    // in-memory list and is persisted via its own JSON snapshot instead.
+    widget.job.syncInvoices();
+    widget.job.notes = notes;
 
+    if (DemoModeService.instance.isDemoMode) {
+      await DemoModeService.instance.persistCurrentSnapshot();
+      return;
+    }
+
+    try {
       // Save to local file for backward compatibility
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/job_${widget.job.id}.json');
@@ -473,13 +486,25 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
   /// items and total. Safe to call repeatedly - the repository is
   /// idempotent and will update the existing Xero invoice rather than
   /// creating a new one on retries.
-  Future<void> _pushXeroInvoiceForInvoice(dynamic invoice) async {
+  ///
+  /// [invoiceLike] may be either a real `Invoice` object or an
+  /// `EstimateVersion` (the invoice list rendered on this screen is
+  /// `job.invoiceVersions`, i.e. `EstimateVersion`s, not `Invoice`s).
+  /// `XeroInvoiceRepositoryImpl.pushInvoice()` requires a real `Invoice`,
+  /// so if we're handed an `EstimateVersion` we resolve (or create) the
+  /// matching `Invoice` via `job.syncInvoices()` first. Previously this
+  /// method passed the `EstimateVersion` straight through, which threw a
+  /// runtime TypeError that was silently swallowed by the catch block,
+  /// so the Xero push always failed with no visible error.
+  Future<void> _pushXeroInvoiceForInvoice(dynamic invoiceLike) async {
     try {
+      final invoice = _resolveRealInvoice(invoiceLike);
+      if (invoice == null) return;
       final repository = XeroInvoiceRepositoryImpl();
       await repository.pushInvoice(
         job: widget.job,
         invoice: invoice,
-        localInvoiceNumber: invoice.invoiceNumber ?? invoice.id ?? '',
+        localInvoiceNumber: invoice.id,
       );
     } catch (e) {
       debugPrint('Xero invoice push failed: $e');
@@ -488,19 +513,23 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
   /// Pushes a Payment to Xero for an invoice that was just marked paid
   /// locally, so both ledgers stay reconciled without double entry.
-  Future<void> _pushXeroPaymentForInvoice(dynamic invoice) async {
+  /// See [_pushXeroInvoiceForInvoice] for why [invoiceLike] is resolved
+  /// to a real `Invoice` first.
+  Future<void> _pushXeroPaymentForInvoice(dynamic invoiceLike) async {
     try {
+      final invoice = _resolveRealInvoice(invoiceLike);
+      if (invoice == null) return;
       final repository = XeroInvoiceRepositoryImpl();
       // Ensure the invoice exists in Xero first (in case it was marked
       // paid before ever being pushed), then push the payment.
       await repository.pushInvoice(
         job: widget.job,
         invoice: invoice,
-        localInvoiceNumber: invoice.invoiceNumber ?? invoice.id ?? '',
+        localInvoiceNumber: invoice.id,
       );
       await repository.pushPayment(
         localInvoiceId: invoice.id,
-        amountPaid: invoice.amount ?? invoice.total,
+        amountPaid: invoice.amount,
       );
     } catch (e) {
       debugPrint('Xero payment push failed: $e');
@@ -512,13 +541,33 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
   /// sitting in Xero after the local copy is gone. Safe/idempotent to
   /// call repeatedly - if there's no linked Xero invoice yet (or it's
   /// already voided) this is a no-op.
-  Future<void> _pushXeroVoidForInvoice(dynamic invoice) async {
+  Future<void> _pushXeroVoidForInvoice(dynamic invoiceLike) async {
     try {
+      final invoice = _resolveRealInvoice(invoiceLike);
+      if (invoice == null) return;
       final repository = XeroInvoiceRepositoryImpl();
       await repository.pushVoid(localInvoiceId: invoice.id);
     } catch (e) {
       debugPrint('Xero invoice void push failed: $e');
     }
+  }
+
+  /// Resolves whatever was passed (an `EstimateVersion` from
+  /// `job.invoiceVersions`, or an actual `Invoice`) into a real `Invoice`
+  /// object, syncing the job's invoices first so a matching `Invoice`
+  /// exists to find. Returns null if it can't be resolved.
+  Invoice? _resolveRealInvoice(dynamic invoiceLike) {
+    if (invoiceLike is Invoice) return invoiceLike;
+    widget.job.syncInvoices();
+    final versionId =
+        (invoiceLike.id ?? invoiceLike.invoiceNumber)?.toString();
+    if (versionId == null) return null;
+    for (final inv in widget.job.invoices) {
+      if (inv.id == versionId || inv.id == invoiceLike.invoiceNumber) {
+        return inv;
+      }
+    }
+    return null;
   }
 
   /// Mark as having unsaved changes and trigger auto-save
@@ -533,8 +582,20 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
       if (cloudJob != null) {
         setState(() {
-          widget.job.estimateVersions = cloudJob.estimateVersions;
-          widget.job.attachments = cloudJob.attachments;
+          // 🔧 FIX: MERGE estimateVersions (builds) instead of blindly
+          // replacing them. A stale/empty Firestore doc (e.g. after a
+          // cloud reset/restore) must never wipe out local builds that
+          // haven't made it back to the cloud yet. Keep whichever side has
+          // more estimateVersions for this job; if counts match, merge by
+          // id so nothing is lost either way.
+          widget.job.estimateVersions = _mergeEstimateVersions(
+              widget.job.estimateVersions, cloudJob.estimateVersions);
+          // 🔧 FIX: MERGE attachments instead of replacing them
+          // Local additions (pending PDFs) take priority over cloud version
+          final cloudAttachments = cloudJob.attachments ?? [];
+          final localAttachments = widget.job.attachments ?? [];
+          final merged = <String>{...cloudAttachments, ...localAttachments}.toList();
+          widget.job.attachments = merged.isEmpty ? null : merged;
           widget.job.notes = cloudJob.notes;
           // Update other relevant fields
         });
@@ -560,8 +621,13 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
         if (jobData != null) {
           final updatedJob = job_model.Job.fromJson(jobData);
           setState(() {
-            widget.job.estimateVersions = updatedJob.estimateVersions;
-            widget.job.attachments = updatedJob.attachments;
+            widget.job.estimateVersions = _mergeEstimateVersions(
+                widget.job.estimateVersions, updatedJob.estimateVersions);
+            // 🔧 FIX: MERGE attachments instead of replacing them
+            final diskAttachments = updatedJob.attachments ?? [];
+            final localAttachments = widget.job.attachments ?? [];
+            final merged = <String>{...diskAttachments, ...localAttachments}.toList();
+            widget.job.attachments = merged.isEmpty ? null : merged;
             widget.job.notes = updatedJob.notes;
             // Sync invoices to ensure consistency
             widget.job.syncInvoices();
@@ -577,8 +643,13 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
       final jsonString = await jobFile.readAsString();
       final updatedJob = job_model.Job.fromJson(jsonDecode(jsonString));
       setState(() {
-        widget.job.estimateVersions = updatedJob.estimateVersions;
-        widget.job.attachments = updatedJob.attachments;
+        widget.job.estimateVersions = _mergeEstimateVersions(
+            widget.job.estimateVersions, updatedJob.estimateVersions);
+        // 🔧 FIX: MERGE attachments instead of replacing them
+        final diskAttachments = updatedJob.attachments ?? [];
+        final localAttachments = widget.job.attachments ?? [];
+        final merged = <String>{...diskAttachments, ...localAttachments}.toList();
+        widget.job.attachments = merged.isEmpty ? null : merged;
         widget.job.notes = updatedJob.notes;
         widget.job.syncInvoices();
       });
@@ -586,6 +657,32 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
     // Always refresh in-progress builds when reloading job
     _loadInProgressBuilds();
+  }
+
+  /// Merges two lists of [EstimateVersion] ("builds") so a stale or empty
+  /// source (e.g. Firestore after a cloud reset, or a disk file that lost
+  /// data) can never silently wipe out builds that exist on the other
+  /// side. Builds are matched by id (falling back to invoiceNumber) - for
+  /// any id present in only one list, that version is kept; for ids in
+  /// both lists, the version is kept as-is from [primary] (assumed to be
+  /// the currently in-memory/local version, which may have unsaved
+  /// in-session edits). This guarantees the merged result always has at
+  /// least as many builds as the richer of the two inputs.
+  List<EstimateVersion> _mergeEstimateVersions(
+      List<EstimateVersion> primary, List<EstimateVersion> secondary) {
+    String keyOf(EstimateVersion v) =>
+        (v.id ?? v.invoiceNumber ?? identityHashCode(v).toString());
+
+    final merged = <String, EstimateVersion>{};
+    for (final v in secondary) {
+      merged[keyOf(v)] = v;
+    }
+    // Primary (local/in-memory) wins on id collisions, and contributes any
+    // versions the secondary side doesn't have.
+    for (final v in primary) {
+      merged[keyOf(v)] = v;
+    }
+    return merged.values.toList();
   }
 
   Future<void> _emailCustomer() async {
@@ -743,15 +840,23 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
       await Future.delayed(const Duration(milliseconds: 100));
       var sendSucceeded = false;
       try {
-        debugPrint(
-            'Email send: calling sendEmailViaSmtp to ${recipients.join(', ')}');
-        await sendEmailViaSmtp(
-          toEmails: recipients,
-          subject: subjectController.text,
-          body: bodyController.text,
-          attachmentPaths: selectedAttachments,
-        ).timeout(const Duration(seconds: 60));
-        debugPrint('Email send: sendEmailViaSmtp completed');
+        if (DemoModeService.instance.isDemoMode) {
+          // Demo Mode: never touch the real mailer/SMTP or compile a real
+          // PDF - just simulate the send with a short delay and fire the
+          // friendly demo toast.
+          await Future.delayed(const Duration(milliseconds: 400));
+          debugPrint('Email send: [Demo Mode] simulated send, no real SMTP call made');
+        } else {
+          debugPrint(
+              'Email send: calling sendEmailViaSmtp to ${recipients.join(', ')}');
+          await sendEmailViaSmtp(
+            toEmails: recipients,
+            subject: subjectController.text,
+            body: bodyController.text,
+            attachmentPaths: selectedAttachments,
+          ).timeout(const Duration(seconds: 60));
+          debugPrint('Email send: sendEmailViaSmtp completed');
+        }
         sendSucceeded = true;
         _closeLoadingDialog();
 
@@ -817,9 +922,20 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
         await _saveJob();
 
         if (mounted) {
+          final demoMessage = DemoModeService.instance.isDemoMode
+              ? DemoModeService.instance.fakeSendEmail(
+                  documentType: hasInvoiceAttachment
+                      ? 'Invoice'
+                      : hasEstimateAttachment
+                          ? (emailType == 'quote' ? 'Quote' : 'Estimate')
+                          : 'Email',
+                  recipientEmail:
+                      recipients.isNotEmpty ? recipients.first : 'customer@example.com',
+                )
+              : null;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Email sent successfully!'),
+            SnackBar(
+              content: Text(demoMessage ?? 'Email sent successfully!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -1672,11 +1788,131 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
     }
   }
 
+  /// Reads [pdfPath] with AI to reconstruct a full editable build (items,
+  /// sections, deposit, customer details) from a previously-generated PDF,
+  /// looks up each item's buy price from the current pricebook (by ID code,
+  /// falling back to name - never guessed), creates a new in-progress build
+  /// from the result, and opens it in the builder for the user to review.
+  ///
+  /// [hintedDocumentType] ('invoice'/'estimate'/'quote'), if known from
+  /// where the PDF was opened from, is passed as a strong hint to the AI
+  /// but the AI will still confirm/override it from the PDF's own text.
+  Future<void> _convertPdfToBuild(String pdfPath,
+      {String? hintedDocumentType}) async {
+    bool dialogShowing = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 20),
+            Expanded(child: Text('Reading PDF with AI…')),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final extraction = await PdfToBuildService.extractBuildFromPdf(
+        File(pdfPath),
+        hintedDocumentType: hintedDocumentType,
+      );
+
+      if (extraction.items.isEmpty) {
+        throw Exception(
+            'AI could not find any line items in this PDF. It may be a scanned image rather than a text-based PDF.');
+      }
+
+      // Look up buy prices from the current pricebook - never guessed by
+      // the AI, since customer PDFs don't print them.
+      final priceBook = await FirebaseIntegrationService.loadPriceBook();
+      final itemsWithBuyPrices = PdfToBuildService.applyPricebookBuyPrices(
+        items: extraction.items,
+        priceBook: priceBook,
+      );
+
+      final totalAmount = itemsWithBuyPrices.fold<double>(
+          0.0, (sum, item) => sum + item.total);
+      final totalProfit = itemsWithBuyPrices.fold<double>(
+          0.0,
+          (sum, item) =>
+              sum +
+              (item.total - ((item.purchasePrice ?? 0) * item.quantity)));
+
+      final newBuild = await InProgressBuildService.createNewBuild(
+        jobId: widget.job.id,
+        items: itemsWithBuyPrices,
+        subsections: extraction.subsections,
+        buildType: extraction.documentType,
+        totalAmount: totalAmount,
+        totalProfit: totalProfit,
+        additionalData: {
+          if (extraction.depositAmount != null)
+            'depositAmount': extraction.depositAmount,
+          if (extraction.depositPercentage != null)
+            'depositPercentage': extraction.depositPercentage,
+          'isDepositPercentage': extraction.isDepositPercentage,
+        },
+      );
+
+      if (dialogShowing && mounted) {
+        Navigator.pop(context);
+        dialogShowing = false;
+      }
+
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EstimateBuilderScreen(
+            job: widget.job,
+            inProgressBuildId: newBuild.id,
+            initialItems: itemsWithBuyPrices,
+            initialSubsections: extraction.subsections,
+            initialDepositAmount: extraction.depositAmount,
+            initialDepositPercentage: extraction.depositPercentage,
+            initialIsDepositPercentage: extraction.isDepositPercentage,
+            initialBuildType: extraction.documentType,
+          ),
+        ),
+      );
+      await _reloadJob();
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (dialogShowing && mounted) {
+        Navigator.pop(context);
+        dialogShowing = false;
+      }
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Conversion Failed'),
+            content: Text('Could not convert this PDF to a build:\n\n$e'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _processInvoiceAction(dynamic invoice, String action) async {
     switch (action) {
       case 'pdf':
         if (invoice.filePath != null) {
           await OpenFile.open(invoice.filePath);
+        }
+        break;
+      case 'convert_pdf':
+        if (invoice.filePath != null) {
+          await _convertPdfToBuild(invoice.filePath, hintedDocumentType: 'invoice');
         }
         break;
       case 'builder':
@@ -1686,6 +1922,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
             MaterialPageRoute(
               builder: (_) => EstimateBuilderScreen(
                 job: widget.job,
+                inProgressBuildId: invoice.builderBuildId,
                 initialItems: invoice.items,
                 initialSubsections: invoice.subsections,
                 initialDepositAmount: invoice.depositAmount,
@@ -1700,20 +1937,29 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
         break;
       case 'paid':
         invoice.isPaid = true;
+        // Explicitly tag this as a manual mark-paid (vs. one reconciled
+        // automatically via Xero's bank feed webhook), so the UI can
+        // show "Marked Paid" vs "Paid (Xero)" distinctly.
+        invoice.paidVia = 'manual';
         await _saveJob();
-        // Fire-and-forget: push a Payment to Xero so the two ledgers
-        // stay reconciled. Local state has already been updated above
-        // so the UI stays instant regardless of network conditions.
-        unawaited(_pushXeroPaymentForInvoice(invoice));
+        if (!DemoModeService.instance.isDemoMode) {
+          // Fire-and-forget: push a Payment to Xero so the two ledgers
+          // stay reconciled. Local state has already been updated above
+          // so the UI stays instant regardless of network conditions.
+          // Skipped entirely in Demo Mode - no real accounting sync.
+          unawaited(_pushXeroPaymentForInvoice(invoice));
+        }
         break;
       case 'void':
       case 'archive':
         invoice.isArchived = true;
         await _saveJob();
-        // Fire-and-forget: void the linked Xero invoice too, so a
-        // stale AUTHORISED invoice doesn't linger there after it's
-        // been voided/archived locally.
-        unawaited(_pushXeroVoidForInvoice(invoice));
+        if (!DemoModeService.instance.isDemoMode) {
+          // Fire-and-forget: void the linked Xero invoice too, so a
+          // stale AUTHORISED invoice doesn't linger there after it's
+          // been voided/archived locally. Skipped in Demo Mode.
+          unawaited(_pushXeroVoidForInvoice(invoice));
+        }
         break;
       case 'due':
         final newDate = await showDatePicker(
@@ -1737,6 +1983,12 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
           await OpenFile.open(estimate.filePath);
         }
         break;
+      case 'convert_pdf':
+        if (estimate.filePath != null) {
+          await _convertPdfToBuild(estimate.filePath,
+              hintedDocumentType: estimate.type ?? 'estimate');
+        }
+        break;
       case 'builder':
         if (estimate.items != null) {
           await Navigator.push(
@@ -1744,6 +1996,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
             MaterialPageRoute(
               builder: (_) => EstimateBuilderScreen(
                 job: widget.job,
+                inProgressBuildId: estimate.builderBuildId,
                 initialItems: estimate.items,
                 initialSubsections: estimate.sections,
                 initialDepositAmount: estimate.depositAmount,
@@ -2001,7 +2254,11 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(job.title),
+        title: Text(DemoModeService.instance.isDemoMode
+            ? '${job.title} (Demo)'
+            : job.title),
+        backgroundColor:
+            DemoModeService.instance.isDemoMode ? Colors.deepPurple : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.add_task),
@@ -2289,7 +2546,9 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                   );
                 }
 
-                final builds = snapshot.data ?? [];
+                final builds = (snapshot.data ?? [])
+                    .where((build) => !build.isFinalized)
+                    .toList();
 
                 if (builds.isEmpty) {
                   return const Padding(
@@ -2589,12 +2848,19 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                         Text('Due: ${formatDate(invoice.dueDate)}'),
                         Text('Amount: \$${invoice.amount.toStringAsFixed(2)}'),
                         Text(
-                            'Status: ${invoice.isPaid ? "Paid" : invoice.isArchived ? "Archived" : "Unpaid"}'),
+                            'Status: ${invoice.isPaid ? (invoice.paidVia == 'xero' ? "Paid (Xero)" : "Marked Paid") : invoice.isArchived ? "Archived" : "Unpaid"}'),
                       ],
                     ),
                     trailing: PopupMenuButton<String>(
                       onSelected: (action) async {
                         await _processInvoiceAction(invoice, action);
+                        // _processInvoiceAction mutates isPaid/isArchived
+                        // directly on the invoice object and persists it,
+                        // but without this the screen never rebuilds to
+                        // reflect the change - it would look like "Mark as
+                        // Paid"/"Archive" silently did nothing even though
+                        // the underlying data was updated correctly.
+                        if (mounted) setState(() {});
                       },
                       itemBuilder: (context) => [
                         if (invoice.filePath != null)
@@ -2602,6 +2868,11 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                               value: 'pdf', child: Text('Open PDF')),
                         const PopupMenuItem(
                             value: 'builder', child: Text('Open in Builder')),
+                        if (invoice.filePath != null &&
+                            (invoice.items as List).isEmpty)
+                          const PopupMenuItem(
+                              value: 'convert_pdf',
+                              child: Text('Convert PDF to Build')),
                         if (!invoice.isPaid)
                           const PopupMenuItem(
                               value: 'paid', child: Text('Mark as Paid')),
@@ -2651,6 +2922,10 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                     trailing: PopupMenuButton<String>(
                       onSelected: (action) async {
                         await _processEstimateAction(estimate, action);
+                        // Same as the invoices list above - without this
+                        // the screen never rebuilds after voiding/
+                        // archiving an estimate/quote.
+                        if (mounted) setState(() {});
                       },
                       itemBuilder: (context) => [
                         if (estimate.filePath != null)
@@ -2658,6 +2933,11 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                               value: 'pdf', child: Text('Open PDF')),
                         const PopupMenuItem(
                             value: 'builder', child: Text('Open in Builder')),
+                        if (estimate.filePath != null &&
+                            (estimate.items as List).isEmpty)
+                          const PopupMenuItem(
+                              value: 'convert_pdf',
+                              child: Text('Convert PDF to Build')),
                         if (!estimate.isConverted)
                           const PopupMenuItem(
                               value: 'convert',
@@ -2792,6 +3072,7 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
             ...attachments.asMap().entries.map((entry) {
               final index = entry.key;
               final file = entry.value;
+              final isPdf = file.toLowerCase().endsWith('.pdf');
               return ListTile(
                 leading: _buildAttachmentLeadingThumbnail(file),
                 title: Text(file.split('/').last),
@@ -2807,6 +3088,21 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                     ),
                   );
                 },
+                trailing: isPdf
+                    ? PopupMenuButton<String>(
+                        onSelected: (action) async {
+                          if (action == 'convert') {
+                            await _convertPdfToBuild(file);
+                          }
+                        },
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: 'convert',
+                            child: Text('Convert PDF to Build'),
+                          ),
+                        ],
+                      )
+                    : null,
               );
             }),
             TextButton.icon(
@@ -2814,21 +3110,99 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
               label: const Text('Add Attachment'),
               onPressed: () async {
                 final result = await FilePicker.platform.pickFiles(
-                  allowMultiple: false,
+                  allowMultiple: true,
                   type: FileType.any,
                 );
-                if (result != null && result.files.single.path != null) {
+                if (result != null && result.files.isNotEmpty) {
+                  final newPaths = result.files
+                      .map((f) => f.path)
+                      .whereType<String>()
+                      .toList();
+                  if (newPaths.isEmpty) return;
                   setState(() {
                     job.attachments ??= [];
-                    job.attachments!.add(result.files.single.path!);
+                    job.attachments!.addAll(newPaths);
                   });
                   await _saveJob();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(newPaths.length == 1
+                            ? 'Added 1 attachment'
+                            : 'Added ${newPaths.length} attachments'),
+                      ),
+                    );
+                  }
                 }
               },
             ),
             const SizedBox(height: 20),
             Text('Photos', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
+            Builder(builder: (context) {
+              const imageExtensions = {
+                'jpg',
+                'jpeg',
+                'png',
+                'gif',
+                'webp',
+                'bmp'
+              };
+              final photoPaths = attachments.where((path) {
+                final ext = path.split('.').last.toLowerCase();
+                return imageExtensions.contains(ext);
+              }).toList();
+
+              if (photoPaths.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'No photos yet.',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                );
+              }
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                  ),
+                  itemCount: photoPaths.length,
+                  itemBuilder: (context, index) {
+                    final path = photoPaths[index];
+                    return GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => AttachmentViewerScreen(
+                              attachmentPaths: photoPaths,
+                              initialIndex: index,
+                            ),
+                          ),
+                        );
+                      },
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.file(
+                          File(path),
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) =>
+                              const Icon(Icons.broken_image),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              );
+            }),
             Row(
               children: [
                 Expanded(

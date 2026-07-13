@@ -72,6 +72,13 @@ class InProgressBuild {
   final String? templateName; // Optional template that created this build
   final List<InProgressVersion> versions;
   final String currentVersionId; // ID of the current/latest version
+  // When this build has been used to generate a final PDF (estimate, quote,
+  // or invoice), this holds the id of the resulting EstimateVersion. Once
+  // set, the build is considered "finalized" - it's preserved (never
+  // deleted/mutated further) so it stays linked to that document. Reopening
+  // a finalized build should create a new duplicate build instead of
+  // editing this one in place.
+  final String? finalizedDocumentId;
 
   InProgressBuild({
     required this.id,
@@ -82,7 +89,10 @@ class InProgressBuild {
     this.templateName,
     required this.versions,
     required this.currentVersionId,
+    this.finalizedDocumentId,
   });
+
+  bool get isFinalized => finalizedDocumentId != null;
 
   /// Get the current/latest version
   InProgressVersion get currentVersion => 
@@ -104,6 +114,7 @@ class InProgressBuild {
         .map((version) => InProgressVersion.fromJson(version as Map<String, dynamic>))
         .toList(),
     currentVersionId: json['currentVersionId'],
+    finalizedDocumentId: json['finalizedDocumentId'],
   );
 
   Map<String, dynamic> toJson() => {
@@ -115,6 +126,7 @@ class InProgressBuild {
     'templateName': templateName,
     'versions': versions.map((version) => version.toJson()).toList(),
     'currentVersionId': currentVersionId,
+    'finalizedDocumentId': finalizedDocumentId,
   };
 
   /// Create a copy with updated values
@@ -127,6 +139,8 @@ class InProgressBuild {
     String? templateName,
     List<InProgressVersion>? versions,
     String? currentVersionId,
+    String? finalizedDocumentId,
+    bool clearFinalizedDocumentId = false,
   }) => InProgressBuild(
     id: id ?? this.id,
     jobId: jobId ?? this.jobId,
@@ -136,6 +150,9 @@ class InProgressBuild {
     templateName: templateName ?? this.templateName,
     versions: versions ?? List<InProgressVersion>.from(this.versions),
     currentVersionId: currentVersionId ?? this.currentVersionId,
+    finalizedDocumentId: clearFinalizedDocumentId
+        ? null
+        : (finalizedDocumentId ?? this.finalizedDocumentId),
   );
 
   /// Add a new version and make it current

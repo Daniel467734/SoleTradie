@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/pricebook_cloud_sync_service.dart';
+import '../services/demo_mode_service.dart';
 import 'pricebook_csv_import_screen.dart';
 
 enum PriceBookKind {
@@ -133,8 +134,36 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
     }
   }
 
+  /// Converts a demo-mode pricebook item into the screen's local
+  /// [PriceBookItem] shape so all existing UI/sort/search code works
+  /// unmodified while in Demo Mode.
+  PriceBookItem _demoItemToPriceBookItem(DemoPriceBookItem item) {
+    return PriceBookItem(
+      code: item.code,
+      name: item.name,
+      unit: item.unit,
+      groupCode: item.category,
+      barcode: item.barcode,
+      price: item.salePrice,
+      purchasePrice: item.purchasePrice,
+      origin: 'demo',
+      needsSync: false,
+    );
+  }
+
   // ROBUST LOADING: Always prioritize local file, never lose data
   Future<void> _loadPriceBookFromDisk() async {
+    // DEMO MODE: read from the in-memory demo pricebook instead of disk.
+    if (DemoModeService.instance.isDemoMode) {
+      setState(() {
+        priceBook = DemoModeService.instance.priceBook
+            .map(_demoItemToPriceBookItem)
+            .toList();
+      });
+      _ensureHardcodedPriceBookItems();
+      print('✅ [Demo Mode] Loaded ${priceBook.length} pricebook items from demo sandbox');
+      return;
+    }
     try {
       print('🔄 Loading pricebook - prioritizing local file for reliability...');
       
@@ -1099,6 +1128,35 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
 
   // ROBUST LOCAL FILE SAVING - Always save to device immediately
   Future<void> _saveToLocalFile() async {
+    // DEMO MODE: persist edits back into the in-memory demo sandbox only,
+    // never touch the real pricebook file on disk.
+    if (DemoModeService.instance.isDemoMode) {
+      final demoService = DemoModeService.instance;
+      for (final item in priceBook) {
+        final index =
+            demoService.priceBook.indexWhere((p) => p.code == item.code);
+        final updated = DemoPriceBookItem(
+          id: index != -1
+              ? demoService.priceBook[index].id
+              : 'demo_pb_${item.code}',
+          code: item.code,
+          name: item.name,
+          category: item.groupCode,
+          purchasePrice: item.purchasePrice,
+          salePrice: item.price,
+          unit: item.unit,
+          barcode: item.barcode,
+        );
+        if (index != -1) {
+          demoService.priceBook[index] = updated;
+        } else {
+          demoService.priceBook.add(updated);
+        }
+      }
+      await demoService.persistCurrentSnapshot();
+      print('💾 [Demo Mode] Saved ${priceBook.length} pricebook items to demo sandbox');
+      return;
+    }
     try {
       final directory = await getApplicationDocumentsDirectory();
       final file = File('${directory.path}/${widget.storageFileName}');
@@ -1288,10 +1346,27 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
       );
 
       if (scannedBarcode != null && scannedBarcode.isNotEmpty) {
-        setState(() {
-          searchQuery = scannedBarcode;
-          _searchController.text = scannedBarcode;
-        });
+        if (DemoModeService.instance.isDemoMode) {
+          // DEMO MODE: resolve/mint via the demo pricebook "magic barcode"
+          // fallback, add it into the on-screen list if not already there,
+          // and search for it.
+          final demoItem =
+              DemoModeService.instance.scanBarcode(scannedBarcode);
+          setState(() {
+            final exists =
+                priceBook.any((p) => p.code == demoItem.code);
+            if (!exists) {
+              priceBook.add(_demoItemToPriceBookItem(demoItem));
+            }
+            searchQuery = scannedBarcode;
+            _searchController.text = scannedBarcode;
+          });
+        } else {
+          setState(() {
+            searchQuery = scannedBarcode;
+            _searchController.text = scannedBarcode;
+          });
+        }
       }
     } catch (e) {
       print('Barcode scan failed: $e');
@@ -1719,7 +1794,11 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.title),
+          title: Text(DemoModeService.instance.isDemoMode
+              ? '${widget.title} (Demo Mode)'
+              : widget.title),
+          backgroundColor:
+              DemoModeService.instance.isDemoMode ? Colors.deepPurple : null,
           actions: [
             IconButton(
               icon: Icon(showFavoritesOnly ? Icons.star : Icons.star_border),

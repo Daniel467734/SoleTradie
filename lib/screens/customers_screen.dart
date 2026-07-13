@@ -27,6 +27,14 @@ class CustomersScreen extends StatefulWidget {
 class _CustomersScreenState extends State<CustomersScreen> {
   String search = '';
 
+  /// Builds a normalized dedup key for a customer based on name+email+phone.
+  /// Used to detect duplicates during CSV import and via the "Remove
+  /// Duplicates" tool - customers are considered the same if they share the
+  /// same (non-blank) name, email, and phone once trimmed/lowercased.
+  String _dedupKey({required String name, required String email, required String phone}) {
+    return '${name.trim().toLowerCase()}|${email.trim().toLowerCase()}|${phone.trim()}';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +47,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   Future<void> _showAddEditDialog(BuildContext context, {Customer? customer}) async {
     final companyController = TextEditingController();
     final nameController = TextEditingController(text: customer?.name ?? '');
+    final lastNameController = TextEditingController(text: customer?.lastName ?? '');
     final emailController = TextEditingController(text: customer?.email ?? '');
     final phoneController = TextEditingController(text: customer?.phone ?? '');
     final addressController = TextEditingController(text: customer?.address ?? '');
@@ -150,6 +159,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: nameController,
                   decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                TextField(textCapitalization: TextCapitalization.sentences, 
+                  controller: lastNameController,
+                  decoration: const InputDecoration(labelText: 'Last Name'),
                 ),
                 TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
@@ -388,6 +401,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 final newCustomer = Customer(
                   id: customer?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
                   name: nameController.text.trim(),
+                  lastName: lastNameController.text.trim(),
                   companyName: companyController.text.trim(),
                   email: emailController.text.trim(),
                   additionalEmails: additionalEmails,
@@ -509,7 +523,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
     print('Total columns in CSV: ${rows.first.length}');
 
     int importedCount = 0;
+    int skippedDuplicateCount = 0;
     final List<Customer> customersToAdd = [];
+
+    // Build a set of dedup keys for customers that already exist, so the
+    // CSV import never creates duplicate customers (this was previously
+    // possible if the same CSV was imported more than once, or if a CSV
+    // contained customers already added manually).
+    final existingKeys = widget.customers
+        .map((c) => _dedupKey(name: c.name, email: c.email, phone: c.phone))
+        .toSet();
 
     // Skip header row and process data
     for (var i = 1; i < rows.length; i++) {
@@ -567,7 +590,38 @@ class _CustomersScreenState extends State<CustomersScreen> {
           continue;
         }
 
+        // Skip rows that look like a mis-parsed CSV header row (e.g. a
+        // header line accidentally treated as data because of a shifted
+        // column offset), which previously created bogus "customers" like
+        // name="Co./Last Name", email="Card ID", phone="Card Status".
+        final lowerName = customerName.trim().toLowerCase();
+        final lowerEmail = email.trim().toLowerCase();
+        final lowerPhone = phone.trim().toLowerCase();
+        const headerLikeValues = {
+          'name', 'first name', 'last name', 'co./last name', 'company',
+          'company name', 'email', 'email address', 'card id', 'card status',
+          'phone', 'phone number', 'address',
+        };
+        if (headerLikeValues.contains(lowerName) ||
+            headerLikeValues.contains(lowerEmail) ||
+            headerLikeValues.contains(lowerPhone)) {
+          print('Skipping row $i: looks like a CSV header row, not real customer data');
+          continue;
+        }
+
         print('Fixed format row $i: name="$customerName", email="$email", phone="$phone", address="$address"');
+
+        // Skip if a customer with the same name+email+phone already exists
+        // (either already in the app, or already queued from earlier in
+        // this same CSV) - prevents duplicate customers from repeated or
+        // overlapping CSV imports.
+        final key = _dedupKey(name: customerName, email: email, phone: phone);
+        if (existingKeys.contains(key)) {
+          print('Skipping row $i: duplicate of existing customer ($key)');
+          skippedDuplicateCount++;
+          continue;
+        }
+        existingKeys.add(key);
 
         customersToAdd.add(Customer(
           id: '${DateTime.now().millisecondsSinceEpoch}_fixed_$i',
@@ -586,6 +640,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
       } catch (e) {
         print('Error importing Fergus row $i: $e');
       }
+    }
+    
+    if (skippedDuplicateCount > 0) {
+      print('Skipped $skippedDuplicateCount duplicate customer(s) during import');
     }
     
     // Show progress dialog for adding customers
@@ -670,6 +728,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       builder: (context) {
         final companyController = TextEditingController();
         final nameController = TextEditingController();
+        final lastNameController = TextEditingController();
         final emailController = TextEditingController();
         final phoneController = TextEditingController();
         final addressController = TextEditingController();
@@ -688,6 +747,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: nameController,
                   decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                TextField(textCapitalization: TextCapitalization.sentences, 
+                  controller: lastNameController,
+                  decoration: const InputDecoration(labelText: 'Last Name'),
                 ),
                 TextField(textCapitalization: TextCapitalization.sentences, 
                   controller: addressController,
@@ -733,6 +796,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 final newCustomer = Customer(
                   id: DateTime.now().millisecondsSinceEpoch.toString(),
                   name: nameController.text.trim(),
+                  lastName: lastNameController.text.trim(),
                   companyName: companyController.text.trim(),
                   email: emailController.text.trim(),
                   additionalEmails: [], // Empty for new customer dialog
@@ -859,6 +923,76 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
   }
 
+  /// Finds groups of customers that share the same name+email+phone (see
+  /// [_dedupKey]) and, for each group, keeps only the first one found while
+  /// removing the rest. Shows a confirmation dialog first summarizing how
+  /// many duplicate customers were found before doing anything.
+  Future<void> _removeDuplicateCustomers(BuildContext context) async {
+    final groups = <String, List<Customer>>{};
+    for (final customer in widget.customers) {
+      final key = _dedupKey(name: customer.name, email: customer.email, phone: customer.phone);
+      // Don't treat completely blank customers as duplicates of each other.
+      if (key == '||') continue;
+      groups.putIfAbsent(key, () => []).add(customer);
+    }
+
+    final duplicateGroups = groups.values.where((g) => g.length > 1).toList();
+    final toRemove = <Customer>[];
+    for (final group in duplicateGroups) {
+      // Keep the first customer in each group, remove the rest.
+      toRemove.addAll(group.skip(1));
+    }
+
+    if (toRemove.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No duplicate customers found.')),
+        );
+      }
+      return;
+    }
+
+    if (!context.mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove Duplicate Customers'),
+        content: Text(
+          'Found ${duplicateGroups.length} customer(s) with duplicates, '
+          '${toRemove.length} duplicate record(s) will be removed '
+          '(the oldest copy of each customer is kept).\n\n'
+          'This cannot be undone. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            child: const Text('Remove Duplicates'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    for (final customer in toRemove) {
+      widget.onRemove(customer.id);
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Removed ${toRemove.length} duplicate customer(s).'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
   Future<String?> _showAddEmailDialog(BuildContext context) async {
     final emailController = TextEditingController();
     
@@ -928,6 +1062,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
             tooltip: 'Import CSV',
             onPressed: () => importFromCsv(context),
           ),
+          if (widget.customers.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.content_copy),
+              tooltip: 'Remove Duplicate Customers',
+              onPressed: () => _removeDuplicateCustomers(context),
+            ),
           if (widget.customers.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_sweep),

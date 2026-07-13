@@ -1,6 +1,7 @@
 class Customer {
   final String id;
   final String name;
+  final String lastName;
   final String companyName;
   final String address;
   final String email;
@@ -13,6 +14,7 @@ class Customer {
   Customer({
     required this.id,
     required this.name,
+    this.lastName = '',
     this.companyName = '',
     required this.address,
     required this.email,
@@ -26,6 +28,7 @@ class Customer {
   Customer copyWith({
     String? id,
     String? name,
+    String? lastName,
     String? companyName,
     String? address,
     String? email,
@@ -38,6 +41,7 @@ class Customer {
     return Customer(
       id: id ?? this.id,
       name: name ?? this.name,
+      lastName: lastName ?? this.lastName,
       companyName: companyName ?? this.companyName,
       address: address ?? this.address,
       email: email ?? this.email,
@@ -50,21 +54,26 @@ class Customer {
   }
 
   factory Customer.fromJson(Map<String, dynamic> json) => Customer(
-        id: json['id'],
-        name: json['name'],
-        companyName: json['companyName'] ?? '',
-        address: json['address'],
-        email: json['email'],
-        additionalEmails: List<String>.from(json['additionalEmails'] ?? []),
-        phone: json['phone'],
-        paymentTerms: json['paymentTerms'] ?? '7 days',
-        bodyCorporateNumber: json['bodyCorporateNumber'] ?? '',
-        isRemote: json['isRemote'] ?? false,
+        id: (json['id'] ?? '').toString(),
+        name: (json['name'] ?? '').toString(),
+        lastName: (json['lastName'] ?? '').toString(),
+        companyName: (json['companyName'] ?? '').toString(),
+        address: (json['address'] ?? '').toString(),
+        email: (json['email'] ?? '').toString(),
+        additionalEmails: List<String>.from(
+          (json['additionalEmails'] as List<dynamic>? ?? const [])
+              .map((e) => (e ?? '').toString()),
+        ),
+        phone: (json['phone'] ?? '').toString(),
+        paymentTerms: (json['paymentTerms'] ?? '7 days').toString(),
+        bodyCorporateNumber: (json['bodyCorporateNumber'] ?? '').toString(),
+        isRemote: json['isRemote'] == true,
       );
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
+        'lastName': lastName,
         'companyName': companyName,
         'address': address,
         'email': email,
@@ -74,6 +83,9 @@ class Customer {
         'bodyCorporateNumber': bodyCorporateNumber,
         'isRemote': isRemote,
       };
+
+  /// Full name combining first name (`name`) and `lastName`, trimmed.
+  String get fullName => [name, lastName].where((s) => s.trim().isNotEmpty).join(' ');
 
   /// Returns all email addresses for this customer (primary + additional)
   List<String> getAllEmails() {

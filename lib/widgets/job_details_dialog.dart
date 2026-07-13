@@ -193,27 +193,37 @@ class _JobDetailsDialogState extends State<JobDetailsDialog> {
       print(
           'JobDetailsDialog: created job object ${newJob.id} title="${newJob.title}"');
 
-      // Get the current jobs file path
-      final directory = await getApplicationDocumentsDirectory();
-      final jobsFile = File('${directory.path}/jobs.json');
+      // Save to local disk if available. This throws a
+      // MissingPluginException on web (no path_provider implementation
+      // there), so it's wrapped separately and never allowed to abort job
+      // creation - the Firestore cloud save below is the source of truth
+      // on web anyway.
+      try {
+        final directory = await getApplicationDocumentsDirectory();
+        final jobsFile = File('${directory.path}/jobs.json');
 
-      // Load existing jobs
-      List<job_model.Job> jobs = [];
-      if (await jobsFile.exists()) {
-        final jsonString = await jobsFile.readAsString();
-        final jsonList = jsonDecode(jsonString) as List;
-        jobs = jsonList.map((json) => job_model.Job.fromJson(json)).toList();
+        // Load existing jobs
+        List<job_model.Job> jobs = [];
+        if (await jobsFile.exists()) {
+          final jsonString = await jobsFile.readAsString();
+          final jsonList = jsonDecode(jsonString) as List;
+          jobs = jsonList.map((json) => job_model.Job.fromJson(json)).toList();
+        }
+
+        // Add new job
+        jobs.add(newJob);
+
+        // Save to local file
+        final jsonList = jobs.map((job) => job.toJson()).toList();
+        print(
+            'JobDetailsDialog: saving ${jobs.length} jobs to local file ${jobsFile.path}');
+        await jobsFile.writeAsString(jsonEncode(jsonList));
+        print('JobDetailsDialog: local save complete');
+      } catch (e) {
+        // Expected on web (no local filesystem) - the cloud save below
+        // still runs, so the job is not lost.
+        print('⚠️ JobDetailsDialog: could not save job to local disk (expected on web): $e');
       }
-
-      // Add new job
-      jobs.add(newJob);
-
-      // Save to local file
-      final jsonList = jobs.map((job) => job.toJson()).toList();
-      print(
-          'JobDetailsDialog: saving ${jobs.length} jobs to local file ${jobsFile.path}');
-      await jobsFile.writeAsString(jsonEncode(jsonList));
-      print('JobDetailsDialog: local save complete');
 
       // Save to cloud in the background so the dialog does not wait on remote persistence.
       print(
