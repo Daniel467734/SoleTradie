@@ -7982,133 +7982,142 @@ Now extract from this invoice text:
                           _debouncedSearch(section.name, val);
                         },
                       ),
+                      // 🎯 PERFORMANCE: Limit results to 10 and use ListView.builder for efficiency
                       if (searchQuery.isNotEmpty && searchResults.isNotEmpty)
-                        ...searchResults.map((item) => ListTile(
-                              title: Text(item.name),
-                              subtitle: Text(
-                                  'Code: ${item.code}  \$${item.price.toStringAsFixed(2)}'),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.add),
-                                onPressed: () async {
-                                  estimate_item.EstimateItem? addedItem;
-                                  setState(() {
-                                    item.usageCount = item.usageCount + 1;
-                                    final insertIdx = items.indexWhere(
-                                        (i) => i.section == section.name);
-
-                                    final newItem = estimate_item.EstimateItem(
-                                      name: item.name,
-                                      description: item.code,
-                                      unitPrice: item.price,
-                                      quantity: 1,
-                                      purchasePrice: item.purchasePrice,
-                                      section: section.name,
-                                    );
-                                    if (insertIdx == -1) {
-                                      items.insert(0, newItem);
-                                    } else {
-                                      items.insert(insertIdx, newItem);
-                                    }
-                                    _moveVehicleItemsToBottomInSection(section.name);
-                                    addedItem = newItem;
-                                    _sectionSearchQueries[section.name] = '';
-                                    _sectionSearchControllers[section.name]
-                                        ?.clear();
-                                    _hasUnsavedChanges = true;
-                                  });
-                                  // Save both estimate and pricebook after usage count increment
-                                  _saveInProgressEstimate();
-                                  _savePriceBookToDisk();
-
-                                  // --- Open calendar if CAL ---
-                                  if (addedItem != null &&
-                                      addedItem!.description == 'CAL') {
-                                    DateTime selectedDate = DateTime.now();
-                                    final picked = await showDatePicker(
-                                      context: context,
-                                      initialDate: selectedDate,
-                                      firstDate: DateTime(2000),
-                                      lastDate: DateTime(2100),
-                                    );
-                                    if (picked != null) selectedDate = picked;
+                        SizedBox(
+                          height: math.min(searchResults.length * 72.0, 320.0),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: math.min(searchResults.length, 10),
+                            itemBuilder: (context, idx) {
+                              final item = searchResults[idx];
+                              return ListTile(
+                                title: Text(item.name),
+                                subtitle: Text(
+                                    'Code: ${item.code}  \$${item.price.toStringAsFixed(2)}'),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.add),
+                                  onPressed: () async {
+                                    estimate_item.EstimateItem? addedItem;
                                     setState(() {
-                                      final idx = items.lastIndexWhere((i) =>
-                                          i.section == section.name &&
-                                          i.description == 'CAL');
-                                      if (idx != -1) {
-                                        final dateStr =
-                                            '${selectedDate.day} ${_monthAbbr(selectedDate.month)}';
-                                        items[idx] = items[idx].copyWith(
-                                          name: 'Labour on $dateStr',
-                                          description: 'Labour on $dateStr',
-                                        );
-                                      }
-                                    });
-                                    _saveInProgressEstimate();
-                                  }
+                                      item.usageCount = item.usageCount + 1;
+                                      final insertIdx = items.indexWhere(
+                                          (i) => i.section == section.name);
 
-                                  // --- Open discount dialog if DIS ---
-                                  if (addedItem != null &&
-                                      addedItem!.description == 'DIS') {
-                                    final controller =
-                                        TextEditingController(text: '');
-                                    final result = await showDialog<double>(
-                                      context: context,
-                                      builder: (context) => AlertDialog(
-                                        title:
-                                            const Text('Enter Discount Amount'),
-                                        content: TextField(
-                                          textCapitalization:
-                                              TextCapitalization.sentences,
-                                          controller: controller,
-                                          keyboardType: const TextInputType
-                                              .numberWithOptions(
-                                              decimal: true, signed: true),
-                                          autofocus: true,
-                                          decoration: const InputDecoration(
-                                              labelText: 'Discount (\$)'),
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.pop(context),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          ElevatedButton(
-                                            onPressed: () {
-                                              final val = double.tryParse(
-                                                  controller.text);
-                                              if (val != null && val > 0) {
-                                                Navigator.pop(context, val);
-                                              }
-                                            },
-                                            child: const Text('Apply'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (result != null) {
+                                      final newItem = estimate_item.EstimateItem(
+                                        name: item.name,
+                                        description: item.code,
+                                        unitPrice: item.price,
+                                        quantity: 1,
+                                        purchasePrice: item.purchasePrice,
+                                        section: section.name,
+                                      );
+                                      if (insertIdx == -1) {
+                                        items.insert(0, newItem);
+                                      } else {
+                                        items.insert(insertIdx, newItem);
+                                      }
+                                      _moveVehicleItemsToBottomInSection(section.name);
+                                      addedItem = newItem;
+                                      _sectionSearchQueries[section.name] = '';
+                                      _sectionSearchControllers[section.name]
+                                          ?.clear();
+                                      _hasUnsavedChanges = true;
+                                    });
+                                    // Save both estimate and pricebook after usage count increment
+                                    _saveInProgressEstimate();
+                                    _savePriceBookToDisk();
+
+                                    // --- Open calendar if CAL ---
+                                    if (addedItem != null &&
+                                        addedItem!.description == 'CAL') {
+                                      DateTime selectedDate = DateTime.now();
+                                      final picked = await showDatePicker(
+                                        context: context,
+                                        initialDate: selectedDate,
+                                        firstDate: DateTime(2000),
+                                        lastDate: DateTime(2100),
+                                      );
+                                      if (picked != null) selectedDate = picked;
                                       setState(() {
-                                        // ...existing code...
                                         final idx = items.lastIndexWhere((i) =>
                                             i.section == section.name &&
-                                            i.description == 'DIS');
+                                            i.description == 'CAL');
                                         if (idx != -1) {
+                                          final dateStr =
+                                              '${selectedDate.day} ${_monthAbbr(selectedDate.month)}';
                                           items[idx] = items[idx].copyWith(
-                                            unitPrice: -result
-                                                .abs(), // Always negative
-                                            name: 'Discount',
+                                            name: 'Labour on $dateStr',
+                                            description: 'Labour on $dateStr',
                                           );
                                         }
-// ...existing code...
-                                        _hasUnsavedChanges = true;
                                       });
                                       _saveInProgressEstimate();
                                     }
-                                  }
-                                },
-                              ),
-                            )),
+
+                                    // --- Open discount dialog if DIS ---
+                                    if (addedItem != null &&
+                                        addedItem!.description == 'DIS') {
+                                      final controller =
+                                          TextEditingController(text: '');
+                                      final result = await showDialog<double>(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title:
+                                              const Text('Enter Discount Amount'),
+                                          content: TextField(
+                                            textCapitalization:
+                                                TextCapitalization.sentences,
+                                            controller: controller,
+                                            keyboardType: const TextInputType
+                                                .numberWithOptions(
+                                                decimal: true, signed: true),
+                                            autofocus: true,
+                                            decoration: const InputDecoration(
+                                                labelText: 'Discount (\$)'),
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(context),
+                                              child: const Text('Cancel'),
+                                            ),
+                                            ElevatedButton(
+                                              onPressed: () {
+                                                final val = double.tryParse(
+                                                    controller.text);
+                                                if (val != null && val > 0) {
+                                                  Navigator.pop(context, val);
+                                                }
+                                              },
+                                              child: const Text('Apply'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (result != null) {
+                                        setState(() {
+                                          final idx = items.lastIndexWhere((i) =>
+                                              i.section == section.name &&
+                                              i.description == 'DIS');
+                                          if (idx != -1) {
+                                            items[idx] = items[idx].copyWith(
+                                              unitPrice: -result
+                                                  .abs(), // Always negative
+                                              name: 'Discount',
+                                            );
+                                          }
+                                          _hasUnsavedChanges = true;
+                                        });
+                                        _saveInProgressEstimate();
+                                      }
+                                    }
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                       if (searchQuery.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.all(8.0),

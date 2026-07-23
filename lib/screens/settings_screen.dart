@@ -22,8 +22,11 @@ import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart' show DataType;
 import '../services/demo_mode_service.dart';
 import '../services/firestore_service.dart';
+import '../services/openai_key_service.dart';
+import '../services/cloud_sync_throttled_service.dart';
 import 'data_management_screen.dart';
 import 'storage_settings_screen.dart';
+import 'cloud_status_debug_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -59,6 +62,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     {'name': 'JA Russell', 'file': 'ja_russell.txt'},
     // Add more templates here as they become available
   ];
+
+  // AI Features (receipt scanner, PDF-to-Build conversion) - the OpenAI
+  // API key used at runtime. Stored on-device so it works on an installed
+  // phone build without needing to rebuild the app with --dart-define.
+  final _openAiApiKeyController = TextEditingController();
+  bool _openAiApiKeyObscured = true;
   
   // Accounting Integration Settings
   bool _myobEnabled = false;
@@ -94,6 +103,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isDarkMode = false;
   bool _autoBackup = false;
   bool _isCloudSyncing = false;
+  bool _isThrottledSyncActive = false;
+  double _throttledSyncProgress = 0.0;
+  String _throttledSyncOperation = '';
   bool _isGstRegistered = true; // Default to GST registered
   Color _appColor = const Color(0xFF2196F3); // Default blue
   Color _accentColor = const Color(0xFF4CAF50); // Default green accent (secondary colour used app-wide for highlights/success)
@@ -190,6 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ? selectedTemplatesString.split(',')
           : [];
     });
+    _openAiApiKeyController.text = await OpenAiKeyService.getStoredKeyForDisplay();
   }
 
   String _fixSmtpServer(String server) {
@@ -410,6 +423,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     
     // PDF Receipt Scanner Settings
     await prefs.setString('selected_supplier_templates', _selectedSupplierTemplates.join(','));
+
+    // AI Features - OpenAI API key (used at runtime by receipt scanner and
+    // PDF-to-Build conversion; stored via OpenAiKeyService so it works on
+    // an installed phone build without needing a --dart-define rebuild).
+    await OpenAiKeyService.setKey(_openAiApiKeyController.text);
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1503,6 +1521,29 @@ Many Thanks
           
           const SizedBox(height: 32),
           
+          // Debug Button (for troubleshooting cloud issues)
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const CloudStatusDebugScreen(),
+                ),
+              );
+            },
+            icon: const Icon(Icons.bug_report),
+            label: const Text('☁️ Cloud Status Debug'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.deepPurple,
+              minimumSize: const Size(double.infinity, 44),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 12),
+          
           // Save Button
           ElevatedButton.icon(
             onPressed: _saveSettings,
@@ -1949,7 +1990,55 @@ Many Thanks
             ],
           ),
           const SizedBox(height: 8),
-          
+
+          // AI Features - OpenAI API Key
+          Card(
+            elevation: 1,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.smart_toy, color: Colors.teal),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'AI Features (OpenAI API Key)',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Required for the receipt scanner and PDF-to-Build conversion. '
+                    'Get a key at platform.openai.com/account/api-keys, then paste it here.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _openAiApiKeyController,
+                    obscureText: _openAiApiKeyObscured,
+                    decoration: InputDecoration(
+                      labelText: 'OpenAI API Key',
+                      prefixIcon: const Icon(Icons.vpn_key),
+                      suffixIcon: IconButton(
+                        icon: Icon(_openAiApiKeyObscured
+                            ? Icons.visibility
+                            : Icons.visibility_off),
+                        onPressed: () => setState(
+                            () => _openAiApiKeyObscured = !_openAiApiKeyObscured),
+                      ),
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
           // Supplier Template Selection
           Card(
             elevation: 1,
@@ -3150,6 +3239,91 @@ Many Thanks
           
           const SizedBox(height: 16),
           
+          // Throttled One-Way Sync Section
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.purple[50],
+              border: Border.all(color: Colors.purple[200]!),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.speed, color: Colors.purple[700], size: 24),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Careful One-Way Sync (Throttled)',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Slowly upload all local data with progress indicator',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '🎯 Perfect for careful data synchronization',
+                  style: TextStyle(fontSize: 12, color: Colors.purple[900]),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '⏱️ Throttled speed prevents network saturation',
+                  style: TextStyle(fontSize: 12, color: Colors.purple[900]),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '📊 Real-time progress indicator shows what\'s being uploaded',
+                  style: TextStyle(fontSize: 12, color: Colors.purple[900]),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isThrottledSyncActive ? null : _performThrottledCloudSync,
+                    icon: _isThrottledSyncActive 
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.cloud_upload, size: 18),
+                    label: Text(_isThrottledSyncActive 
+                        ? 'Syncing... ${(_throttledSyncProgress * 100).toStringAsFixed(0)}%' 
+                        : 'Start Throttled Sync'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.purple[600],
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+          
           // Sync Status Section
           Container(
             padding: const EdgeInsets.all(12),
@@ -3176,7 +3350,7 @@ Many Thanks
           
           const SizedBox(height: 8),
           Text(
-            'Manual sync uploads/downloads all data types: customers, price book, builds, and estimates',
+            'Manual sync uploads/downloads all data types: customers, price book, builds, and estimates • Throttled sync limits speed to prevent network issues',
             style: TextStyle(
               fontSize: 11,
               color: Colors.grey[600],
@@ -3328,6 +3502,158 @@ Many Thanks
         ],
       ),
     );
+  }
+
+  /// Perform one-way throttled cloud sync with progress indicator
+  Future<void> _performThrottledCloudSync() async {
+    if (_isThrottledSyncActive) return;
+    
+    setState(() {
+      _isThrottledSyncActive = true;
+      _throttledSyncProgress = 0.0;
+      _throttledSyncOperation = 'Starting sync...';
+    });
+    
+    // Show progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('One-Way Cloud Sync'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Uploading your local data to the cloud...',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 20),
+              // Progress bar
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: _throttledSyncProgress,
+                  minHeight: 10,
+                  backgroundColor: Colors.grey[300],
+                  valueColor: AlwaysStoppedAnimation<Color>(_appColor),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Progress percentage
+              Text(
+                '${(_throttledSyncProgress * 100).toStringAsFixed(1)}% Complete',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: _appColor,
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Operation description
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _throttledSyncOperation,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[700],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Info box
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  border: Border.all(color: Colors.blue[200]!),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.blue[700], size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Sync is throttled to prevent network saturation. This ensures stable uploads even with slow connections.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.blue[900],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+    
+    try {
+      // Set up progress callback
+      CloudSyncThrottledService.setProgressCallback((progress, operation) {
+        setState(() {
+          _throttledSyncProgress = progress;
+          _throttledSyncOperation = operation;
+        });
+      });
+      
+      // Perform the sync
+      final success = await CloudSyncThrottledService.performOneWaySync();
+      
+      if (!mounted) return;
+      Navigator.pop(context); // Close progress dialog
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('✅ Cloud sync completed successfully!'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('⚠️ Cloud sync encountered issues. Check logs for details.'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context); // Close progress dialog
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Cloud sync failed: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } finally {
+      setState(() {
+        _isThrottledSyncActive = false;
+        _throttledSyncProgress = 0.0;
+        _throttledSyncOperation = '';
+      });
+    }
   }
 
   /// Request new template functionality

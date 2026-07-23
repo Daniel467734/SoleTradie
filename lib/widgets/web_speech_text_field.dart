@@ -34,6 +34,7 @@ class _WebSpeechTextFieldState extends State<WebSpeechTextField> {
   int _sessionCount = 0;
   bool _hasError = false;
   String _errorMessage = '';
+  bool _userStoppedListening = false; // Track if user manually stopped
   
   // Session management for long recordings
   static const Duration _maxSessionDuration = Duration(minutes: 3);
@@ -79,10 +80,11 @@ class _WebSpeechTextFieldState extends State<WebSpeechTextField> {
         _isListening = true;
         _hasError = false;
         _errorMessage = '';
+        _userStoppedListening = false; // Reset flag when listening starts
       } else if (status == 'notListening') {
         _isListening = false;
-        // Auto-restart for continuous listening
-        if (widget.continuousListening && !_hasError) {
+        // Only auto-restart if user didn't manually stop and continuous listening is enabled
+        if (widget.continuousListening && !_hasError && !_userStoppedListening) {
           _scheduleRestart();
         }
       }
@@ -179,7 +181,23 @@ class _WebSpeechTextFieldState extends State<WebSpeechTextField> {
         if (existingText.isNotEmpty && !existingText.endsWith(' ')) {
           existingText += ' ';
         }
-        widget.controller.text = existingText + _currentWords;
+        
+        // Capitalize first letter of new text if starting a new sentence
+        String textToAdd = _currentWords;
+        if (textToAdd.isNotEmpty) {
+          // Capitalize first letter
+          textToAdd = textToAdd[0].toUpperCase() + textToAdd.substring(1);
+          
+          // If existing text is empty or ends with sentence terminator, capitalize
+          if (existingText.isEmpty) {
+            textToAdd = textToAdd[0].toUpperCase() + textToAdd.substring(1);
+          } else if (RegExp(r'[.!?]\s*$').hasMatch(existingText)) {
+            // Previous text ends with sentence terminator, capitalize
+            textToAdd = textToAdd[0].toUpperCase() + textToAdd.substring(1);
+          }
+        }
+        
+        widget.controller.text = existingText + textToAdd;
         _currentWords = '';
         
         // Move cursor to end
@@ -200,6 +218,7 @@ class _WebSpeechTextFieldState extends State<WebSpeechTextField> {
     
     setState(() {
       _isListening = false;
+      _userStoppedListening = true; // Mark that user manually stopped
     });
   }
 

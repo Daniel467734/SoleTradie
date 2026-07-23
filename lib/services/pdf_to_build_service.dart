@@ -5,7 +5,7 @@ import 'package:syncfusion_flutter_pdf/pdf.dart' as sfpdf;
 
 import '../models/estimate_item.dart';
 import '../screens/pricebook_extensive_screen.dart' show PriceBookItem;
-import '../templates/pdf_receipt_templates.dart' show openAiApiKey;
+import 'openai_key_service.dart';
 
 /// Result of an AI-driven PDF -> Build extraction. Mirrors the subset of
 /// fields the estimate builder needs to reconstruct an in-progress build
@@ -15,6 +15,11 @@ class PdfBuildExtractionResult {
   final String documentType;
   final List<EstimateItem> items;
   final List<String> subsections;
+  /// Maps each subsection name to its extracted description/subtitle text
+  /// (the small paragraph shown under a section heading in the PDF, e.g.
+  /// via `_pdfSectionHeader`'s `subtitle`). Sections with no description
+  /// text in the PDF are simply absent from this map.
+  final Map<String, String> sectionDescriptions;
   final double? depositAmount;
   final double? depositPercentage;
   final bool isDepositPercentage;
@@ -27,6 +32,7 @@ class PdfBuildExtractionResult {
     required this.documentType,
     required this.items,
     required this.subsections,
+    this.sectionDescriptions = const {},
     this.depositAmount,
     this.depositPercentage,
     this.isDepositPercentage = false,
@@ -83,7 +89,11 @@ class PdfToBuildService {
 
   static Future<Map<String, dynamic>> _analyzeDocumentText(
       String text, String? hintedDocumentType) async {
-    const apiKey = openAiApiKey;
+    final apiKey = await OpenAiKeyService.getKey();
+    if (apiKey.isEmpty) {
+      throw Exception(
+          'No OpenAI API key configured. Go to Settings > AI Features and enter your OpenAI API key to use PDF-to-Build conversion.');
+    }
     final hint = hintedDocumentType != null
         ? 'This PDF was filed under this app\'s "$hintedDocumentType" section, so it is very likely a $hintedDocumentType, but confirm this from the document\'s own title/heading text and override it if the text clearly disagrees.'
         : 'Determine the document type from the text itself.';
@@ -112,6 +122,7 @@ Extract a structured JSON object with this exact shape:
   "sections": [
     {
       "name": string,
+      "description": string or null,
       "items": [
         {
           "item_name": string,
@@ -130,6 +141,7 @@ Extract a structured JSON object with this exact shape:
 
 Rules:
 - "sections" should reflect whatever section/subsection headings appear above groups of line items in the document. If there are no explicit section headings, put all items under a single section named "Main".
+- "description" is any subtitle/paragraph text shown directly under a section's heading (before its item table starts) describing that section - e.g. a short scope note. Leave it null if no such text appears for that section.
 - "unit_price" is the sell price shown per line item (ex-GST if the document shows GST separately, otherwise the shown price).
 - "purchase_price" is usually NOT shown on customer-facing documents - leave it null unless you can clearly see a distinct cost/buy price column.
 - "id_code" is any product/stock code shown next to the item name, if present; otherwise null.
@@ -193,6 +205,7 @@ $text
 
     final items = <EstimateItem>[];
     final subsections = <String>[];
+    final sectionDescriptions = <String, String>{};
 
     final sections = json['sections'];
     if (sections is List) {
@@ -204,6 +217,11 @@ $text
                 : 'Main';
         if (!subsections.contains(sectionName)) {
           subsections.add(sectionName);
+        }
+
+        final description = (sectionRaw['description'] as String?)?.trim();
+        if (description != null && description.isNotEmpty) {
+          sectionDescriptions[sectionName] = description;
         }
 
         final sectionItems = sectionRaw['items'];
@@ -237,6 +255,7 @@ $text
       documentType: normalizedType,
       items: items,
       subsections: subsections,
+      sectionDescriptions: sectionDescriptions,
       depositAmount: _toDouble(json['deposit_amount']),
       depositPercentage: _toDouble(json['deposit_percentage']),
       isDepositPercentage: json['is_deposit_percentage'] == true,

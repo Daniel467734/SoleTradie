@@ -163,10 +163,156 @@ class AddressSearchResult {
 }
 
 class AddressSearchService {
+  /// Cache for address search results (in-memory) to reduce API calls
+  static final Map<String, List<AddressSearchResult>> _searchCache = {};
+  static final Map<String, int> _searchCacheTimestamps = {};
+  static const int _cacheMaxAge = 86400; // 24 hours in seconds
+  static const String _cachePrefix = 'address_search_cache_';
+  static const String _cacheTimestampPrefix = 'address_search_timestamp_';
+
   /// Get the selected country from settings
   static Future<String> getSelectedCountry() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('selected_country') ?? 'New Zealand';
+  }
+
+  /// Generate cache key from query
+  static String _getCacheKey(String query) {
+    return query.trim().toLowerCase().replaceAll(RegExp(r'\s+'), '_');
+  }
+
+  /// Check if cached results are still valid (less than 24 hours old)
+  static bool _isCacheValid(String cacheKey) {
+    try {
+      final timestamp = _searchCacheTimestamps[cacheKey];
+      if (timestamp != null) {
+        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        return (now - timestamp) < _cacheMaxAge;
+      }
+    } catch (e) {
+      // Ignore errors, treat as invalid cache
+    }
+    return false;
+  }
+
+  /// Get cached search results
+  static Future<List<AddressSearchResult>?> _getCachedResults(String query) async {
+    final cacheKey = _getCacheKey(query);
+
+    // Try in-memory cache first
+    if (_searchCache.containsKey(cacheKey) && _isCacheValid(cacheKey)) {
+      print('📍 Address search cache hit: $query');
+      return _searchCache[cacheKey];
+    }
+
+    // Try persistent cache (SharedPreferences)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedJson = prefs.getString('$_cachePrefix$cacheKey');
+      final timestamp = prefs.getInt('$_cacheTimestampPrefix$cacheKey');
+
+      if (cachedJson != null && timestamp != null) {
+        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        if ((now - timestamp) < _cacheMaxAge) {
+          final List<dynamic> data = jsonDecode(cachedJson);
+          final results = data
+              .map((item) => AddressSearchResult.fromJson(item as Map<String, dynamic>, 'OSM'))
+              .toList();
+
+          // Update in-memory cache
+          _searchCache[cacheKey] = results;
+          _searchCacheTimestamps[cacheKey] = timestamp;
+
+          print('📍 Address search persistent cache hit: $query');
+          return results;
+        }
+      }
+    } catch (e) {
+      print('⚠️ Error reading persistent address cache: $e');
+    }
+
+    return null;
+  }
+
+  /// Save search results to cache
+  static Future<void> _cacheResults(String query, List<AddressSearchResult> results) async {
+    final cacheKey = _getCacheKey(query);
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    // Update in-memory cache
+    _searchCache[cacheKey] = results;
+    _searchCacheTimestamps[cacheKey] = now;
+
+    // Save to persistent cache
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonData = results.map((r) => {
+            'address': r.address,
+            'latitude': r.latitude,
+            'longitude': r.longitude,
+            'suburb': r.suburb,
+            'city': r.city,
+            'region': r.region,
+            'postcode': r.postcode,
+            'country': r.country,
+          }).toList();
+      await prefs.setString('$_cachePrefix$cacheKey', jsonEncode(jsonData));
+      await prefs.setInt('$_cacheTimestampPrefix$cacheKey', now);
+      print('💾 Cached ${results.length} address results for: $query');
+    } catch (e) {
+      print('⚠️ Error saving address cache: $e');
+    }
+  }
+
+  /// Get recent addresses from search history for offline fallback
+  static Future<List<AddressSearchResult>> _getRecentAddresses() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final recentJson = prefs.getString('recent_addresses');
+
+      if (recentJson != null) {
+        final List<dynamic> data = jsonDecode(recentJson);
+        return data
+            .take(5) // Return top 5 most recent
+            .map((item) => AddressSearchResult.fromJson(item as Map<String, dynamic>, 'OSM'))
+            .toList();
+      }
+    } catch (e) {
+      print('⚠️ Error loading recent addresses: $e');
+    }
+    return [];
+  }
+
+  /// Save an address to recent history
+  static Future<void> saveRecentAddress(AddressSearchResult address) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final recentJson = prefs.getString('recent_addresses') ?? '[]';
+      final List<dynamic> recentList = jsonDecode(recentJson);
+
+      // Remove if already exists
+      recentList.removeWhere((item) =>
+          (item['address'] ?? '').toString().toLowerCase() ==
+          address.address.toLowerCase());
+
+      // Add to front
+      recentList.insert(0, {
+        'address': address.address,
+        'latitude': address.latitude,
+        'longitude': address.longitude,
+        'suburb': address.suburb,
+        'city': address.city,
+        'region': address.region,
+        'postcode': address.postcode,
+        'country': address.country,
+      });
+
+      // Keep only top 10 recent
+      final limited = recentList.take(10).toList();
+      await prefs.setString('recent_addresses', jsonEncode(limited));
+    } catch (e) {
+      print('⚠️ Error saving recent address: $e');
+    }
   }
 
   /// Get company address coordinates for proximity sorting
@@ -225,16 +371,41 @@ class AddressSearchService {
   static Future<List<AddressSearchResult>> searchAddresses(String query, {int limit = 10}) async {
     if (query.trim().isEmpty) return [];
     
+    // Try to get cached results first
+    final cached = await _getCachedResults(query);
+    if (cached != null) {
+      return cached;
+    }
+    
     final country = await getSelectedCountry();
     List<AddressSearchResult> results;
     
-    switch (country) {
-      case 'New Zealand':
-        results = await _searchNewZealandAddresses(query, limit);
-        break;
-      default:
-        results = await _searchOpenStreetMapAddresses(query, country, limit);
-        break;
+    try {
+      switch (country) {
+        case 'New Zealand':
+          results = await _searchNewZealandAddresses(query, limit);
+          break;
+        default:
+          results = await _searchOpenStreetMapAddresses(query, country, limit);
+          break;
+      }
+
+      // Cache successful results
+      if (results.isNotEmpty) {
+        await _cacheResults(query, results);
+      }
+    } catch (e) {
+      print('❌ Address search error: $e');
+      results = []; // Empty results on network error
+    }
+
+    // If API call failed or returned empty, try offline fallback
+    if (results.isEmpty) {
+      print('📱 Falling back to offline/recent addresses...');
+      final recentAddresses = await _getRecentAddresses();
+      if (recentAddresses.isNotEmpty) {
+        results = recentAddresses;
+      }
     }
 
     // Sort by proximity to company address if available
@@ -367,13 +538,28 @@ class AddressSearchService {
 
   /// Get coordinates for a specific address (geocoding)
   static Future<AddressSearchResult?> geocodeAddress(String address) async {
-    final results = await searchAddresses(address, limit: 1);
-    return results.isNotEmpty ? results.first : null;
+    try {
+      final results = await searchAddresses(address, limit: 1);
+      if (results.isNotEmpty) {
+        final result = results.first;
+        // Save successful geocoding to recent addresses
+        await saveRecentAddress(result);
+        return result;
+      }
+    } catch (e) {
+      print('⚠️ Error geocoding address: $e');
+    }
+    return null;
   }
 
   /// Validate if an address can be geocoded
   static Future<bool> canGeocodeAddress(String address) async {
-    final result = await geocodeAddress(address);
-    return result != null && result.latitude != null && result.longitude != null;
+    try {
+      final result = await geocodeAddress(address);
+      return result != null && result.latitude != null && result.longitude != null;
+    } catch (e) {
+      print('⚠️ Error validating address: $e');
+      return false;
+    }
   }
 }

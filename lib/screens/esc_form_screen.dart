@@ -11,6 +11,7 @@ import '../services/firestore_service.dart';
 import '../services/sync_scheduler.dart';
 import '../services/storage_strategy_service.dart';
 import '../mixins/document_naming_mixin.dart';
+import '../widgets/web_speech_text_field.dart';
 
 class EscFormScreen extends StatefulWidget {
   final Job job;
@@ -58,8 +59,8 @@ class _EscFormScreenState extends State<EscFormScreen>
     // Email (auto fill from user email)
     'userEmail': {'x': 140, 'y': 721, 'width': 200, 'height': 20},
 
-    // Company Name (auto fill from company name)
-    'companyName': {'x': 140, 'y': 700, 'width': 200, 'height': 20},
+    // Company Name (Organisation/Company) - Bottom right box
+    'companyName': {'x': 395, 'y': 740, 'width': 200, 'height': 20},
   };
 
   // Form controllers - simplified for ESC
@@ -143,6 +144,8 @@ class _EscFormScreenState extends State<EscFormScreen>
 
   Future<void> _generatePdf() async {
     try {
+      _showLoadingDialog('Generating ESC Certificate...');
+
       // Load the ESC PDF template
       final data = await rootBundle.load('assets/certificates/ESC EWRB NZ.pdf');
       final bytes = data.buffer.asUint8List();
@@ -155,6 +158,7 @@ class _EscFormScreenState extends State<EscFormScreen>
       // Define fonts
       final font9 = PdfStandardFont(PdfFontFamily.helvetica, 9);
       final font8 = PdfStandardFont(PdfFontFamily.helvetica, 8);
+      final font10 = PdfStandardFont(PdfFontFamily.helvetica, 10);
       final blackBrush = PdfSolidBrush(PdfColor(0, 0, 0));
 
       // Fill in the form fields using the coordinate mapping
@@ -194,7 +198,7 @@ class _EscFormScreenState extends State<EscFormScreen>
             _escFieldCoordinates['customerNameAddress']!['height']!),
       );
 
-      // Details of work checkboxes
+      // Details of work checkboxes - Draw proper checkmarks
       if (_wholeInstallation) {
         _drawCheckMark(
             graphics,
@@ -206,17 +210,61 @@ class _EscFormScreenState extends State<EscFormScreen>
             _escFieldCoordinates['partOfInstall']!['y']!);
       }
 
-      // Work Description
-      graphics.drawString(
-        _workDescriptionController.text,
-        font8,
-        brush: blackBrush,
-        bounds: Rect.fromLTWH(
-            _escFieldCoordinates['workDescription']!['x']!,
-            _escFieldCoordinates['workDescription']!['y']!,
-            _escFieldCoordinates['workDescription']!['width']!,
-            _escFieldCoordinates['workDescription']!['height']!),
-      );
+      // Work Description with text wrapping and overflow handling
+      final workDescText = _workDescriptionController.text;
+      final workDescBounds = Rect.fromLTWH(
+          _escFieldCoordinates['workDescription']!['x']!,
+          _escFieldCoordinates['workDescription']!['y']!,
+          _escFieldCoordinates['workDescription']!['width']!,
+          _escFieldCoordinates['workDescription']!['height']!);
+
+      // Check if text fits on first page (approximately 16 lines at 8pt)
+      final lines = _wrapText(workDescText, workDescBounds.width, font8);
+
+      if (lines.length <= 16) {
+        // Fits on first page
+        graphics.drawString(
+          workDescText,
+          font8,
+          brush: blackBrush,
+          bounds: workDescBounds,
+        );
+      } else {
+        // Text overflows to second page
+        // Draw what fits on first page (first 16 lines)
+        final firstPageLines = lines.sublist(0, 16).join('\n');
+        graphics.drawString(
+          firstPageLines,
+          font8,
+          brush: blackBrush,
+          bounds: workDescBounds,
+        );
+
+        // Create second page for overflow
+        final page2 = document.pages.add();
+        final graphics2 = page2.graphics;
+
+        // Add header indicating continuation
+        graphics2.drawString(
+          'Additional Description Notes - Continuation',
+          font10,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(140, 60, 389, 20),
+        );
+
+        // Draw remaining lines on second page
+        final remainingLines = lines.sublist(16).join('\n');
+        graphics2.drawString(
+          remainingLines,
+          font8,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(
+              _escFieldCoordinates['workDescription']!['x']!,
+              _escFieldCoordinates['workDescription']!['y']! - 100,
+              _escFieldCoordinates['workDescription']!['width']!,
+              _escFieldCoordinates['workDescription']!['height']! + 100),
+        );
+      }
 
       // Include signature if available
       final prefs = await SharedPreferences.getInstance();
@@ -334,12 +382,25 @@ class _EscFormScreenState extends State<EscFormScreen>
       // Save job with new attachment
       await _saveJob();
 
-      // Force parent screen to reload job after returning
+      // Hide loading dialog and show success
       if (mounted) {
-        Navigator.pop(context, true);
+        Navigator.pop(context); // Close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('ESC Certificate generated successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        // Force parent screen to reload job after returning
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) {
+          Navigator.pop(context, true);
+        }
       }
     } catch (e) {
       if (mounted) {
+        Navigator.pop(context); // Close loading dialog
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error generating ESC: $e'),
@@ -550,11 +611,63 @@ class _EscFormScreenState extends State<EscFormScreen>
 
   // Helper method to draw check marks for checkboxes
   void _drawCheckMark(PdfGraphics graphics, double x, double y) {
-    final pen = PdfPen(PdfColor(0, 0, 0), width: 2);
+    final pen = PdfPen(PdfColor(0, 0, 0), width: 2.5);
 
-    // Draw a more centered check mark inside the checkbox area
-    graphics.drawLine(pen, Offset(x + 2, y + 8), Offset(x + 5, y + 12));
-    graphics.drawLine(pen, Offset(x + 5, y + 12), Offset(x + 12, y + 4));
+    // Draw a proper check mark with better visibility
+    // First line of check (downward-left diagonal)
+    graphics.drawLine(pen, Offset(x + 3, y + 8), Offset(x + 6, y + 12));
+    // Second line of check (upward-right diagonal)
+    graphics.drawLine(pen, Offset(x + 6, y + 12), Offset(x + 13, y + 3));
+  }
+
+  /// Wraps text to fit within a specified width
+  List<String> _wrapText(String text, double maxWidth, PdfFont font) {
+    if (text.isEmpty) return [];
+
+    final words = text.split(' ');
+    final lines = <String>[];
+    String currentLine = '';
+
+    for (final word in words) {
+      final testLine = currentLine.isEmpty ? word : '$currentLine $word';
+      // Approximate character width for helvetica 8pt (~2 pixels per character)
+      final estimatedWidth = testLine.length * 2.2;
+
+      if (estimatedWidth <= maxWidth * 0.95) {
+        // Keep 5% margin for safety
+        currentLine = testLine;
+      } else {
+        if (currentLine.isNotEmpty) {
+          lines.add(currentLine);
+        }
+        currentLine = word;
+      }
+    }
+
+    if (currentLine.isNotEmpty) {
+      lines.add(currentLine);
+    }
+
+    return lines;
+  }
+
+  /// Show loading dialog during PDF generation
+  void _showLoadingDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          content: Row(
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(width: 16),
+              Expanded(child: Text(message)),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -615,15 +728,12 @@ class _EscFormScreenState extends State<EscFormScreen>
                         style: TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 8),
-                    TextFormField(
-                      textCapitalization: TextCapitalization.sentences,
+                    WebSpeechTextField(
                       controller: _workDescriptionController,
-                      decoration: const InputDecoration(
-                        labelText: 'Describe the electrical work performed',
-                        prefixIcon: Icon(Icons.description),
-                        border: OutlineInputBorder(),
-                      ),
+                      labelText: 'Describe the electrical work performed',
+                      hintText: 'Tap microphone icon to speak or type description',
                       maxLines: 4,
+                      continuousListening: true,
                     ),
                   ],
                 ),

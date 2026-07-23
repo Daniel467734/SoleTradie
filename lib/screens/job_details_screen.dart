@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../models/job.dart' as job_model;
 import '../models/invoice.dart';
+import '../models/customer.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:flutter/services.dart';
 import '../services/email_service.dart';
@@ -573,6 +574,308 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
   /// Mark as having unsaved changes and trigger auto-save
   void _markDirtyAndAutoSave() {
     _debouncedSave();
+  }
+
+  /// Save current customer details as a new customer to the customer book
+  Future<void> _saveCustomerNew(
+    String name,
+    String companyName,
+    String bodyCorporateNumber,
+    String address,
+    String email,
+  ) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Customer name is required')),
+        );
+      }
+      return;
+    }
+
+    try {
+      // Generate a unique ID for the new customer
+      final customerId = 'customer_${DateTime.now().millisecondsSinceEpoch}';
+
+      // Create a new customer from the provided details
+      final newCustomer = Customer(
+        id: customerId,
+        name: trimmedName,
+        companyName: companyName.trim(),
+        address: address.trim(),
+        email: email.trim(),
+        phone: '', // Optional
+        lastName: '', // Optional
+        additionalEmails: [],
+        bodyCorporateNumber: bodyCorporateNumber.trim(),
+      );
+
+      // Save to customer book via Firebase integration service
+      await FirebaseIntegrationService.saveCustomer(newCustomer);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Customer "$trimmedName" saved to customer book'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Failed to save customer: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      debugPrint('Error saving new customer: $e');
+    }
+  }
+
+  /// Show a searchable dialog to pick an existing customer to overwrite,
+  /// with double confirmation before saving
+  Future<void> _overwriteExistingCustomer(
+    String name,
+    String companyName,
+    String bodyCorporateNumber,
+    String address,
+    String email,
+  ) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Customer name is required')),
+        );
+      }
+      return;
+    }
+
+    try {
+      // Load existing customers
+      final customers =
+          await FirebaseIntegrationService.loadCustomers();
+
+      if (customers.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No customers in customer book yet. Use "New Customer" instead.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Show search dialog to pick which customer to overwrite
+      if (!mounted) return;
+      final selectedCustomer = await _showCustomerSearchDialog(customers);
+
+      if (selectedCustomer == null) {
+        return; // User cancelled
+      }
+
+      // Show double-confirmation dialog
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Confirm Overwrite'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This will update the customer:\n\n"${selectedCustomer.name}"',
+                style: const TextStyle(fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 16),
+              const Text('New details:'),
+              const SizedBox(height: 8),
+              Text('Name: $trimmedName'),
+              if (companyName.trim().isNotEmpty)
+                Text('Company: ${companyName.trim()}'),
+              if (address.trim().isNotEmpty) Text('Address: ${address.trim()}'),
+              if (email.trim().isNotEmpty) Text('Email: ${email.trim()}'),
+              const SizedBox(height: 16),
+              const Text(
+                'Are you sure you want to overwrite this customer?',
+                style: TextStyle(color: Colors.red),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+              ),
+              child: const Text('Yes, Overwrite'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) {
+        return;
+      }
+
+      // Update the customer with new details using copyWith
+      final updatedCustomer = selectedCustomer.copyWith(
+        name: trimmedName,
+        companyName: companyName.trim(),
+        address: address.trim(),
+        email: email.trim(),
+        bodyCorporateNumber: bodyCorporateNumber.trim(),
+      );
+
+      // Save updated customer (will overwrite the one with matching ID)
+      await FirebaseIntegrationService.saveCustomer(updatedCustomer);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Customer "${selectedCustomer.name}" updated successfully',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Failed to overwrite customer: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      debugPrint('Error overwriting customer: $e');
+    }
+  }
+
+  /// Show a searchable dialog to pick a customer from the list
+  Future<Customer?> _showCustomerSearchDialog(List<Customer> customers) async {
+    String searchQuery = '';
+    Customer? selectedCustomer;
+
+    return showDialog<Customer?>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          final filtered = searchQuery.isEmpty
+              ? customers
+              : customers
+                  .where((c) =>
+                      c.name.toLowerCase().contains(searchQuery.toLowerCase()) ||
+                      c.companyName
+                          .toLowerCase()
+                          .contains(searchQuery.toLowerCase()) ||
+                      c.email
+                          .toLowerCase()
+                          .contains(searchQuery.toLowerCase()))
+                  .toList();
+
+          return AlertDialog(
+            title: const Text('Select Customer to Overwrite'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 400,
+              child: Column(
+                children: [
+                  TextField(
+                    decoration: InputDecoration(
+                      hintText: 'Search by name, company, or email',
+                      prefixIcon: const Icon(Icons.search),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        searchQuery = value;
+                        selectedCustomer = null;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? Center(
+                            child: Text(
+                              searchQuery.isEmpty
+                                  ? 'No customers found'
+                                  : 'No matches for "$searchQuery"',
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: filtered.length,
+                            itemBuilder: (context, index) {
+                              final customer = filtered[index];
+                              final isSelected =
+                                  selectedCustomer?.id == customer.id;
+
+                              return Card(
+                                margin:
+                                    const EdgeInsets.symmetric(vertical: 4),
+                                color: isSelected
+                                    ? Colors.blue[50]
+                                    : Colors.transparent,
+                                child: ListTile(
+                                  selected: isSelected,
+                                  title: Text(customer.name),
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      if (customer.companyName.isNotEmpty)
+                                        Text(customer.companyName),
+                                      if (customer.email.isNotEmpty)
+                                        Text(customer.email),
+                                    ],
+                                  ),
+                                  onTap: () {
+                                    setState(() {
+                                      selectedCustomer = customer;
+                                    });
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: selectedCustomer == null
+                    ? null
+                    : () => Navigator.pop(context, selectedCustomer),
+                child: const Text('Select'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _reloadJob() async {
@@ -1854,6 +2157,8 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
           if (extraction.depositPercentage != null)
             'depositPercentage': extraction.depositPercentage,
           'isDepositPercentage': extraction.isDepositPercentage,
+          if (extraction.sectionDescriptions.isNotEmpty)
+            'sectionDescriptions': extraction.sectionDescriptions,
         },
       );
 
@@ -2202,6 +2507,53 @@ class _JobDetailsScreenState extends State<JobDetailsScreen> with RouteAware {
                 controller: emailController,
                 decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 16),
+              // "Save to Customers" option
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Text(
+                  'Save to Customers:',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('New Customer'),
+                      onPressed: () async {
+                        Navigator.pop(context, true);
+                        await _saveCustomerNew(
+                          nameController.text,
+                          companyController.text,
+                          bodyCorporateController.text,
+                          addressController.text,
+                          emailController.text,
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.edit),
+                      label: const Text('Overwrite'),
+                      onPressed: () async {
+                        Navigator.pop(context, true);
+                        await _overwriteExistingCustomer(
+                          nameController.text,
+                          companyController.text,
+                          bodyCorporateController.text,
+                          addressController.text,
+                          emailController.text,
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

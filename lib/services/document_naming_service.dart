@@ -35,8 +35,11 @@ class DocumentNamingService {
     // Count existing documents of the same type
     final count = countExistingDocuments(cleanType, attachments);
 
-    // Add count if there are multiple documents
-    final fileName = count > 1 ? '$baseName ($count)' : baseName;
+    // Add sequence number for ESC and COC documents when there are multiples
+    // First document has no label, second gets (1), third gets (2), etc.
+    final fileName = (cleanType == 'ESC' || cleanType == 'COC') && count > 0
+        ? '$baseName (${count})'
+        : (count > 1 ? '$baseName ($count)' : baseName);
 
     return _ensurePdfExtension(fileName);
   }

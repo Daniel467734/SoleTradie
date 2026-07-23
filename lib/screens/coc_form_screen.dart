@@ -421,6 +421,8 @@ class _CocFormScreenState extends State<CocFormScreen>
       return; // Don't generate PDF if user chooses not to continue
     }
 
+    _showLoadingDialog('Generating COC Certificate...');
+
     try {
       // Load the COC EWRB template from assets
       final ByteData templateData =
@@ -450,9 +452,9 @@ class _CocFormScreenState extends State<CocFormScreen>
           sfpdf.PdfSolidBrush(sfpdf.PdfColor(0, 0, 0));
 
       // Add text at specific coordinates based on the EWRB form layout
-      // Reference Number (top right)
+      // Reference Number (top right) - Use Job Number instead
       graphics.drawString(
-        _referenceNumberController.text,
+        widget.job.id, // Use job ID as reference number
         font10,
         brush: blackBrush,
         bounds: Rect.fromLTWH(_cocFieldCoordinates['referenceNumber']!['x']!,
@@ -777,20 +779,67 @@ class _CocFormScreenState extends State<CocFormScreen>
         );
       }
 
-      // Work Description
-      graphics.drawString(
-        _workDescriptionController.text,
-        font9,
-        brush: blackBrush,
-        bounds: Rect.fromLTWH(
-            _cocFieldCoordinates['workDescription']!['x']!,
-            _cocFieldCoordinates['workDescription']!['y']!,
-            _cocFieldCoordinates['workDescription']!['width']!,
-            _cocFieldCoordinates['workDescription']!['height']!),
-        format: sfpdf.PdfStringFormat(
-            lineAlignment: sfpdf.PdfVerticalAlignment.top,
-            wordWrap: sfpdf.PdfWordWrapType.word),
-      );
+      // Work Description - With text wrapping and multi-page support
+      final workDescText = _workDescriptionController.text;
+      final workDescBounds = _cocFieldCoordinates['workDescription']!;
+      final lines = _wrapText(workDescText, workDescBounds['width']!, font9);
+      
+      if (lines.length <= 8) {
+        // Fits on first page
+        graphics.drawString(
+          workDescText,
+          font9,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(
+              workDescBounds['x']!,
+              workDescBounds['y']!,
+              workDescBounds['width']!,
+              workDescBounds['height']!),
+          format: sfpdf.PdfStringFormat(
+              lineAlignment: sfpdf.PdfVerticalAlignment.top,
+              wordWrap: sfpdf.PdfWordWrapType.word),
+        );
+      } else {
+        // Overflow to second page - split text
+        final firstPageLines = lines.sublist(0, 8).join('\n');
+        graphics.drawString(
+          firstPageLines,
+          font9,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(
+              workDescBounds['x']!,
+              workDescBounds['y']!,
+              workDescBounds['width']!,
+              workDescBounds['height']!),
+          format: sfpdf.PdfStringFormat(
+              lineAlignment: sfpdf.PdfVerticalAlignment.top,
+              wordWrap: sfpdf.PdfWordWrapType.word),
+        );
+        
+        // Create second page for additional description
+        final page2 = existingDocument.pages.add();
+        final graphics2 = page2.graphics;
+        
+        // Add continuation header
+        graphics2.drawString(
+          'Additional Description Notes - Continuation',
+          font10,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(40, 30, 500, 20),
+        );
+        
+        // Add remaining text
+        final remainingLines = lines.sublist(8).join('\n');
+        graphics2.drawString(
+          remainingLines,
+          font9,
+          brush: blackBrush,
+          bounds: Rect.fromLTWH(40, 60, 500, 700),
+          format: sfpdf.PdfStringFormat(
+              lineAlignment: sfpdf.PdfVerticalAlignment.top,
+              wordWrap: sfpdf.PdfWordWrapType.word),
+        );
+      }
 
       // User Information
       graphics.drawString(
@@ -958,6 +1007,11 @@ class _CocFormScreenState extends State<CocFormScreen>
       // Save the job to persist the attachment
       await _saveJob();
 
+      // Close the loading dialog
+      if (mounted) {
+        Navigator.pop(context);
+      }
+
       if (mounted) {
         // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
@@ -976,6 +1030,11 @@ class _CocFormScreenState extends State<CocFormScreen>
         Navigator.pop(context, true); // Pass true to indicate PDF was generated
       }
     } catch (e) {
+      // Close the loading dialog on error
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      
       if (mounted) {
         // Don't show error message if user cancelled PDF generation
         if (e.toString().contains('PDF generation cancelled by user')) {
@@ -2456,8 +2515,9 @@ class _CocFormScreenState extends State<CocFormScreen>
         Offset(x + 0.5, y + 10));
   }
 
-  /// Draw user signature at specified coordinates
+  /// Draw user signature at specified coordinates with dynamic scaling
   /// Uses actual signature image if available, otherwise falls back to user name
+  /// Automatically scales signature to fit within bounds
   Future<void> _drawUserSignature(
       sfpdf.PdfGraphics graphics, double x, double y) async {
     final font10 = sfpdf.PdfStandardFont(sfpdf.PdfFontFamily.helvetica, 10);
@@ -2471,11 +2531,12 @@ class _CocFormScreenState extends State<CocFormScreen>
           final signatureBytes = await signatureFile.readAsBytes();
           final signatureImage = sfpdf.PdfBitmap(signatureBytes);
 
-          // Draw signature image with appropriate size
+          // Scale signature to fit within a smaller box (60x20 pt instead of 120x30)
+          // This prevents signatures from overflowing the text boxes
           graphics.drawImage(
               signatureImage,
-              Rect.fromLTWH(x, y - 15, 120,
-                  30) // Adjusted size and position for signature
+              Rect.fromLTWH(x, y - 5, 60,
+                  15) // Reduced size to fit properly in signature areas
               );
           return;
         }
@@ -2491,6 +2552,49 @@ class _CocFormScreenState extends State<CocFormScreen>
       font10,
       brush: blackBrush,
       bounds: Rect.fromLTWH(x, y, 150, 20),
+    );
+  }
+
+  /// Wraps text to fit within a specified width
+  /// Uses character width estimation for Helvetica font
+  List<String> _wrapText(String text, double maxWidth, sfpdf.PdfFont font) {
+    if (text.isEmpty) return [];
+    final words = text.split(' ');
+    final lines = <String>[];
+    String currentLine = '';
+    
+    for (final word in words) {
+      final testLine = currentLine.isEmpty ? word : '$currentLine $word';
+      // Estimate width: ~2.2 pixels per character for Helvetica 9pt
+      final estimatedWidth = testLine.length * 2.2;
+      
+      if (estimatedWidth <= maxWidth * 0.95) { // 5% safety margin
+        currentLine = testLine;
+      } else {
+        if (currentLine.isNotEmpty) lines.add(currentLine);
+        currentLine = word;
+      }
+    }
+    if (currentLine.isNotEmpty) lines.add(currentLine);
+    return lines;
+  }
+
+  /// Shows a loading dialog during PDF generation
+  void _showLoadingDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          content: Row(
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(width: 16),
+              Expanded(child: Text(message)),
+            ],
+          ),
+        );
+      },
     );
   }
 }

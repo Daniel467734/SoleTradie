@@ -57,13 +57,63 @@ class _PriceBookScreenState extends State<PriceBookScreen> {
     print('🚀 PriceBook initialized with ${priceBook.length} items from widget');
     
     // Load from disk to get latest data (but don't block UI
-    _loadPriceBookFromDisk().then((_) {
+    _loadPriceBookFromDisk().then((_) async {
       _ensureHardcodedPriceBookItems();
+      await _dedupeHardcodedLabourItems();
       print('✅ PriceBook refresh completed - ${priceBook.length} items now available');
     }).catchError((e) {
       print('⚠️ Error refreshing pricebook from disk: $e');
       // UI still works with widget data
     });
+  }
+
+  /// Removes duplicate CAL/EST labour entries, keeping only one of each.
+  /// This can happen from repeated force-uploads/imports where the same
+  /// hardcoded code got appended multiple times instead of being detected
+  /// as already existing. The UI's delete action deliberately blocks
+  /// CAL/EST from manual deletion, so without this the duplicates would be
+  /// stuck forever. Keeps the entry with the highest usageCount (most
+  /// "real" one), merging in the others' usage counts, then removes the
+  /// rest. Saves automatically if any duplicates were found and removed.
+  Future<void> _dedupeHardcodedLabourItems() async {
+    bool changed = false;
+    for (final code in ['CAL', 'EST']) {
+      final matches = priceBook.where((item) => item.code == code).toList();
+      if (matches.length <= 1) continue;
+
+      // Keep the one with the highest usage count (merge the rest in),
+      // preferring a non-empty name if the top usage entry has a blank one.
+      matches.sort((a, b) => b.usageCount.compareTo(a.usageCount));
+      final keeper = matches.first;
+      final totalUsage = matches.fold<int>(0, (sum, item) => sum + item.usageCount);
+      keeper.usageCount = totalUsage;
+      if (keeper.name.isEmpty) {
+        final withName = matches.firstWhere(
+          (item) => item.name.isNotEmpty,
+          orElse: () => keeper,
+        );
+        keeper.name = withName.name;
+      }
+      keeper.markAsModified();
+
+      setState(() {
+        priceBook.removeWhere((item) => item.code == code && !identical(item, keeper));
+      });
+      changed = true;
+      print('🧹 Removed ${matches.length - 1} duplicate "$code" labour entries, kept 1 (merged usage: $totalUsage)');
+    }
+
+    if (changed) {
+      await _saveToLocalFile();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Removed duplicate labour (CAL/EST) pricebook entries.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
   }
 
   /// Ensures hardcoded items (CAL, EST) are always present in the pricebook
