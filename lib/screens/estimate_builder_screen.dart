@@ -6026,36 +6026,42 @@ Now extract from this invoice text:
       };
       await file.writeAsString(jsonEncode(data));
 
-      // Also sync to cloud if Firebase is available and user is authenticated
+      // 🎯 PERFORMANCE FIX: DO NOT sync to cloud on every save
+      // The pricebook is already synced periodically (every 5 minutes via _cloudSyncTimer)
+      // and on app exit (dispose). Syncing on every single item add/edit was causing
+      // severe lag (blocking I/O to Firebase, network delays). Local pricebook is the
+      // source of truth; cloud is just a backup/mirror. Cloud sync only needs to happen:
+      // - Periodically (handled by timer)
+      // - On app exit (handled in dispose)
+      // - After PDF generation (handled separately)
+      // NOT on every keystroke/item add/edit.
+      
+      // To restore cloud sync if needed, uncomment the code below:
+      /*
       try {
         if (FirestoreService.isAuthenticated) {
-          // Convert to PriceBookItem models for Firestore - use correct field names
           final firestoreItems = priceBook
               .map((item) => models.PriceBookItem(
                     code: item.code,
                     name: item.name,
-                    category: item.groupCode, // groupCode maps to category
+                    category: item.groupCode,
                     purchasePrice: item.purchasePrice,
-                    salePrice: item.price, // price maps to salePrice
+                    salePrice: item.price,
                     unit: item.unit,
-                    description:
-                        '', // Default empty description as it's not in local model
+                    description: '',
                     favorite: item.favorite,
                     usageCount: item.usageCount,
                   ))
               .toList();
-
-          // Use static method for batch sync
           await FirestoreService.batchSavePriceBookItems(firestoreItems);
           print('✅ Pricebook synced to cloud (${firestoreItems.length} items)');
         }
       } catch (e) {
         print('Cloud sync failed, but local save succeeded: $e');
-        // Don't throw - local save is more important
       }
+      */
     } catch (e) {
       print('❌ Failed to save pricebook: $e');
-      // You might want to show a snackbar here if context is available
     }
   }
 
