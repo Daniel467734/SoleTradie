@@ -41,6 +41,7 @@ import 'estimate_builder/gps_history_screen.dart';
 
 part 'estimate_builder/estimate_builder_utils.dart';
 part 'estimate_builder/estimate_builder_profit.dart';
+part 'estimate_builder/estimate_builder_totals.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -7773,59 +7774,6 @@ Now extract from this invoice text:
     final prefs = await SharedPreferences.getInstance();
     final jsonList = builds.map((b) => jsonEncode(b.toJson())).toList();
     await prefs.setStringList('estimate_builds', jsonList);
-  }
-
-  double get gstAmount => subTotalExGst * 0.15;
-  double get totalIncGst => subTotalExGst * 1.15;
-  double get totalProfit =>
-      items.fold(0.0, (sum, item) {
-        if (normalizeCode(item.description) == 'dis') {
-          return sum - item.unitPrice * item.quantity;
-        }
-        final purchase = (item.purchasePrice ?? 0);
-        return sum + ((item.unitPrice - purchase) * item.quantity);
-      }) -
-      _totalSectionExtraCosts;
-  // Sum of every subsection's internal-only extra cost, deducted from
-  // profit but never shown on customer-facing documents.
-  double get _totalSectionExtraCosts =>
-      _subsections.fold(0.0, (sum, section) => sum + section.extraCost);
-  double get subTotalExGst =>
-      items.fold(0.0, (sum, item) => sum + (item.unitPrice * item.quantity));
-  double get mainSubTotalExGst => items
-      .where((item) => mainSections.any((s) => s.name == item.section))
-      .fold(0.0, (sum, item) => sum + (item.unitPrice * item.quantity));
-  double get mainGstAmount => mainSubTotalExGst * 0.15;
-  double get mainTotalIncGst => mainSubTotalExGst * 1.15;
-
-  double get currentDepositAmount {
-    if (_depositAmount != null && !_isDepositPercentage) {
-      return _depositAmount!;
-    } else if (_depositPercentage != null && _isDepositPercentage) {
-      return mainTotalIncGst * (_depositPercentage! / 100.0);
-    }
-    return 0.0;
-  }
-
-  Future<bool> getShowLineItemPricesDefault() async {
-    // You can customize this logic, e.g. load from SharedPreferences if needed
-    return true;
-  }
-
-  List<SubsectionData> get mainSections {
-    // All sections before the first "option divider"
-    final dividerIndex =
-        _subsections.indexWhere((s) => s.name == '---OPTIONS---');
-    if (dividerIndex == -1) return _subsections;
-    return _subsections.sublist(0, dividerIndex);
-  }
-
-  List<SubsectionData> get optionSections {
-    // All sections after the first "option divider"
-    final dividerIndex =
-        _subsections.indexWhere((s) => s.name == '---OPTIONS---');
-    if (dividerIndex == -1) return [];
-    return _subsections.sublist(dividerIndex + 1);
   }
 
   void _moveVehicleItemsToBottomInSection(String sectionName) {
