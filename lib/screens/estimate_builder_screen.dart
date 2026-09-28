@@ -40,6 +40,7 @@ import 'estimate_builder/add_estimate_item_dialog.dart';
 import 'estimate_builder/gps_history_screen.dart';
 
 part 'estimate_builder/estimate_builder_utils.dart';
+part 'estimate_builder/estimate_builder_profit.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -2321,42 +2322,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
     }
   }
 
-  /// 🔴 NEW: Applies a 15% project manager markup to all items' sell prices
-  /// This adds 15% to every item's unit price (sell price)
-  void _applyProjectManagerMarkup() {
-    if (items.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No items to mark up')),
-      );
-      return;
-    }
-
-    setState(() {
-      for (int i = 0; i < items.length; i++) {
-        final item = items[i];
-        final newPrice = item.unitPrice * 1.15; // Add 15%
-        items[i] = item.copyWith(unitPrice: newPrice);
-
-        // Update the inline sale price controller if it exists
-        final controller =
-            _itemSalePriceControllers[_lineItemControllerKey(item)];
-        if (controller != null) {
-          controller.text = newPrice.toStringAsFixed(2);
-        }
-      }
-      _hasUnsavedChanges = true;
-    });
-
-    _debouncedSave();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('✅ Added 15% project manager cut to all items'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-
   void _addItemToSection(SubsectionData section) async {
     final item = await showDialog<estimate_item.EstimateItem>(
       context: context,
@@ -2659,46 +2624,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
       _hasUnsavedChanges = true;
     });
     _saveInProgressEstimate();
-  }
-
-  void _toggleProfitView() async {
-    if (_showProfit) {
-      setState(() => _showProfit = false);
-    } else {
-      final enteredPin = await showDialog<String>(
-        context: context,
-        builder: (context) {
-          String pinInput = '';
-          return AlertDialog(
-            title: const Text('Enter PIN'),
-            content: TextField(
-              textCapitalization: TextCapitalization.sentences,
-              obscureText: true,
-              keyboardType: TextInputType.number,
-              onChanged: (val) => pinInput = val,
-              decoration: const InputDecoration(labelText: 'PIN'),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, pinInput),
-                child: const Text('OK'),
-              ),
-            ],
-          );
-        },
-      );
-      if (enteredPin == _pin) {
-        setState(() => _showProfit = true);
-      } else if (enteredPin != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Incorrect PIN')),
-        );
-      }
-    }
   }
 
   Future<List<estimate_item.EstimateItem>?> _scanReceipt(String section,
@@ -5027,79 +4952,80 @@ Now extract from this invoice text:
     }
   }
 
-  // Helper method to calculate the line total for an item, including discount
-  double _lineTotal(estimate_item.EstimateItem item) {
-    final discount = item.discountAmount ?? 0;
-    return (item.unitPrice * item.quantity) - discount;
-  }
-
-  double _lineProfit(estimate_item.EstimateItem item) {
-    final discount = item.discountAmount ?? 0;
-    return ((item.unitPrice * item.quantity - discount) -
-        ((item.purchasePrice ?? 0) * item.quantity));
-  }
-
-  /// Calculates the QUOTED subsection total (what was estimated/quoted originally).
-  /// 🔴 FIXED: Now returns the stored original quoted amount for this subsection (from the estimate/quote),
-  /// NOT calculated from line items. This amount is INDEPENDENT and doesn't change as items are added/removed.
-  /// If no quoted amount was stored (new build, not a conversion), returns 0.
-  double _quotedSubsectionTotal(List<estimate_item.EstimateItem> items) {
-    if (items.isEmpty) return 0.0;
-
-    // Get the section name from the first item
-    final sectionName = items.first.section;
-
-    // Return the stored quoted amount for this section, or 0 if not set
-    return _quotedSubsectionAmounts[sectionName] ?? 0.0;
-  }
-
-  /// Calculates the ACTUAL subsection total (what's currently on the invoice).
-  /// This represents the real cost of the subsection with all items currently included.
-  double _actualSubsectionTotal(List<estimate_item.EstimateItem> items) {
-    return items.fold<double>(0, (sum, item) => sum + _lineTotal(item));
-  }
-
-  /// Calculates subsection difference: current total - quoted total.
-  /// Positive = over quote (items added or quantities increased)
-  /// Negative = under quote (items removed or quantities decreased)
-  /// Accounts for items that weren't estimated but are used, AND items that were estimated but aren't used.
-  double _subsectionQuotedDifference(List<estimate_item.EstimateItem> items) {
-    final actual = _actualSubsectionTotal(items);
-    final quoted = _quotedSubsectionTotal(items);
-    return quoted - actual;
-  }
-
-  /// 🔴 NEW: Loads the original quoted amounts from the source estimate/quote.
-  /// Called when converting an estimate/quote to an invoice to capture the fixed budget amounts.
-  /// Groups items by section and stores the totals in [_quotedSubsectionAmounts] and [_quotedDocumentTotal].
-  void _loadQuotedAmountsFromSourceEstimate() {
-    if (widget.initialItems == null || widget.initialItems!.isEmpty) {
+  /// 🔴 NEW: Applies a 15% project manager markup to all items' sell prices
+  /// This adds 15% to every item's unit price (sell price)
+  void _applyProjectManagerMarkup() {
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No items to mark up')),
+      );
       return;
     }
 
-    // Clear previous values
-    _quotedSubsectionAmounts.clear();
+    setState(() {
+      for (int i = 0; i < items.length; i++) {
+        final item = items[i];
+        final newPrice = item.unitPrice * 1.15; // Add 15%
+        items[i] = item.copyWith(unitPrice: newPrice);
 
-    // Group items by section and calculate totals
-    final Map<String, double> sectionTotals = {};
-    for (final item in widget.initialItems!) {
-      final sectionName = item.section;
-      final itemTotal = _lineTotal(item);
-      sectionTotals[sectionName] =
-          (sectionTotals[sectionName] ?? 0) + itemTotal;
-    }
-
-    // Store subsection totals
-    sectionTotals.forEach((section, total) {
-      _quotedSubsectionAmounts[section] = total;
+        // Update the inline sale price controller if it exists
+        final controller =
+            _itemSalePriceControllers[_lineItemControllerKey(item)];
+        if (controller != null) {
+          controller.text = newPrice.toStringAsFixed(2);
+        }
+      }
+      _hasUnsavedChanges = true;
     });
 
-    // Calculate and store document total
-    _quotedDocumentTotal =
-        sectionTotals.values.fold<double>(0, (sum, total) => sum + total);
+    _debouncedSave();
 
-    print('📋 Loaded quoted amounts from source estimate: '
-        'subsections=$_quotedSubsectionAmounts, documentTotal=$_quotedDocumentTotal');
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('✅ Added 15% project manager cut to all items'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _toggleProfitView() async {
+    if (_showProfit) {
+      setState(() => _showProfit = false);
+    } else {
+      final enteredPin = await showDialog<String>(
+        context: context,
+        builder: (context) {
+          String pinInput = '';
+          return AlertDialog(
+            title: const Text('Enter PIN'),
+            content: TextField(
+              textCapitalization: TextCapitalization.sentences,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              onChanged: (val) => pinInput = val,
+              decoration: const InputDecoration(labelText: 'PIN'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, pinInput),
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+      if (enteredPin == _pin) {
+        setState(() => _showProfit = true);
+      } else if (enteredPin != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Incorrect PIN')),
+        );
+      }
+    }
   }
 
   @override
