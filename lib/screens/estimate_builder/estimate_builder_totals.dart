@@ -3,7 +3,7 @@ part of '../estimate_builder_screen.dart';
 // Document/section total + deposit getters extracted from
 // _EstimateBuilderScreenState (no behavior change, verbatim move).
 // Pure computed getters - no setState calls, safe as a plain extension.
-extension EstimateBuilderTotalsExt on _EstimateBuilderScreenState {
+extension _EstimateBuilderTotalsExt on _EstimateBuilderScreenState {
   double get gstAmount => subTotalExGst * 0.15;
   double get totalIncGst => subTotalExGst * 1.15;
   double get totalProfit =>

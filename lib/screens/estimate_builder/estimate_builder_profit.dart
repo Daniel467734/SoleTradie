@@ -7,7 +7,7 @@ part of '../estimate_builder_screen.dart';
 // analyzer flags State.setState as @protected and disallows calling it
 // from extension methods (invalid_use_of_protected_member), even though
 // it works fine at runtime. Keeping them in the class avoids that warning.
-extension EstimateBuilderProfitExt on _EstimateBuilderScreenState {
+extension _EstimateBuilderProfitExt on _EstimateBuilderScreenState {
   // Helper method to calculate the line total for an item, including discount
   double _lineTotal(estimate_item.EstimateItem item) {
     final discount = item.discountAmount ?? 0;

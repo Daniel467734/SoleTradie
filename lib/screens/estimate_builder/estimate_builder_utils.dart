@@ -5,7 +5,7 @@ part of '../estimate_builder_screen.dart';
 // Kept as an `extension` (not a mixin) so no field declarations need to
 // move and there's no mixin `on`-clause ordering to get right - these
 // still call `this.<field>` implicitly exactly as before.
-extension EstimateBuilderUtilsExt on _EstimateBuilderScreenState {
+extension _EstimateBuilderUtilsExt on _EstimateBuilderScreenState {
   String _itemKey(estimate_item.EstimateItem item) {
     return '${item.name.trim().toLowerCase()}|${item.description.trim().toLowerCase()}|${item.section.trim().toLowerCase()}|${item.unitPrice.toStringAsFixed(2)}';
   }
