@@ -46,6 +46,7 @@ part 'estimate_builder/estimate_builder_pricebook.dart';
 part 'estimate_builder/estimate_builder_drag.dart';
 part 'estimate_builder/estimate_builder_gps_helpers.dart';
 part 'estimate_builder/estimate_builder_scanner_helpers.dart';
+part 'estimate_builder/estimate_builder_templates.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -5611,53 +5612,6 @@ Now extract from this invoice text:
     );
   }
 
-  Future<void> _showTemplateSelector() async {
-    final buildTemplates = _templates.where((t) => t.type == 'build').toList();
-    if (buildTemplates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No build templates available.')),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Select Template'),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: buildTemplates.length,
-              itemBuilder: (context, index) {
-                final template = buildTemplates[index];
-                return ListTile(
-                  title: Text(template.name),
-                  subtitle: Text('${template.subsections.length} subsections'),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    _applyTemplate(template);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                          content: Text('Applied template: ${template.name}')),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   /// Applies a "build" template (selected from the Job Details "Builder"
   /// button). Item ID/code (`description`) and quantity are kept exactly as
   /// saved in the template, but buy price, sell price, and item name are
@@ -5712,12 +5666,6 @@ Now extract from this invoice text:
           .map((s) => EstimateTemplate.fromJson(jsonDecode(s)))
           .toList();
     });
-  }
-
-  Future<void> _saveTemplates() async {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonList = _templates.map((t) => jsonEncode(t.toJson())).toList();
-    await prefs.setStringList('estimate_templates', jsonList);
   }
 
   // 🎯 PERFORMANCE FIX: Debounce + background-isolate encode for pricebook saves.
