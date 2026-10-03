@@ -50,6 +50,7 @@ part 'estimate_builder/estimate_builder_templates.dart';
 part 'estimate_builder/estimate_builder_type_helpers.dart';
 part 'estimate_builder/estimate_builder_document_number.dart';
 part 'estimate_builder/estimate_builder_notes.dart';
+part 'estimate_builder/estimate_builder_conversion_dialogs.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -1462,52 +1463,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
   }
 
   bool _isBuildConvertingLoadingDialogShown = false;
-
-  /// Shows a non-dismissible "Converting build..." loading spinner while
-  /// the pricebook is loaded from disk and checked for price changes as
-  /// part of converting an estimate/quote to an invoice. This whole
-  /// sequence can take up to ~20 seconds for large pricebooks, so the user
-  /// gets clear feedback that something is happening rather than the
-  /// screen appearing to hang.
-  void _showBuildConvertingLoadingDialog() {
-    if (!mounted || _isBuildConvertingLoadingDialogShown) return;
-    _isBuildConvertingLoadingDialogShown = true;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => PopScope(
-        canPop: false,
-        child: const AlertDialog(
-          content: Row(
-            children: [
-              SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  'Converting build... checking pricebook for price '
-                  'changes. This may take up to 20 seconds.',
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Closes the "Converting build..." loading spinner shown by
-  /// `_showBuildConvertingLoadingDialog`, if currently open.
-  void _closeBuildConvertingLoadingDialog() {
-    if (!_isBuildConvertingLoadingDialogShown) return;
-    _isBuildConvertingLoadingDialogShown = false;
-    if (mounted && Navigator.of(context).canPop()) {
-      Navigator.of(context).pop();
-    }
-  }
 
   /// When converting an estimate/quote to an invoice, checks every line
   /// item's buy (purchase) price against the current pricebook value.
