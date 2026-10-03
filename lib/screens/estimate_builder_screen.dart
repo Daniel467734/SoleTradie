@@ -6878,64 +6878,6 @@ Now extract from this invoice text:
     );
   }
 
-  Future<void> _saveSubsectionItemProfitPercentToPriceBook(
-      SubsectionData section) async {
-    final sectionItems =
-        items.where((item) => item.section == section.name).toList();
-    if (sectionItems.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No items in this subsection to save.')),
-      );
-      return;
-    }
-
-    int savedCount = 0;
-    for (final item in sectionItems) {
-      if (item.purchasePrice == null || item.purchasePrice! <= 0) {
-        continue;
-      }
-      final pbItem = priceBook.firstWhereOrNull((pb) {
-        final codeMatch =
-            normalizeCode(pb.code) == normalizeCode(item.description);
-        final nameMatch =
-            normalizeCode(pb.name) == normalizeCode(item.description);
-        final nameMatchAlt = normalizeCode(pb.name) == normalizeCode(item.name);
-        return codeMatch || nameMatch || nameMatchAlt;
-      });
-      if (pbItem == null) {
-        continue;
-      }
-      final percent =
-          ((item.unitPrice - item.purchasePrice!) / item.purchasePrice!) * 100;
-      final priceActuallyChanged =
-          (item.purchasePrice! - pbItem.purchasePrice).abs() >= 0.005 ||
-              (item.unitPrice - pbItem.price).abs() >= 0.005;
-      pbItem.percentageChanged = percent;
-      pbItem.markupPercent = percent;
-      pbItem.markupOverridden = true;
-      pbItem.purchasePrice = item.purchasePrice!;
-      pbItem.price = item.unitPrice;
-      if (priceActuallyChanged) {
-        pbItem.markPriceChanged();
-      }
-      savedCount++;
-    }
-
-    if (savedCount > 0) {
-      _savePriceBookToDisk();
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          savedCount > 0
-              ? 'Saved profit % for $savedCount item${savedCount == 1 ? '' : 's'}.'
-              : 'No matching pricebook items were updated.',
-        ),
-      ),
-    );
-  }
-
   Future<void> _showSectionTemplatePicker(SubsectionData section) async {
     if (_templates.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
