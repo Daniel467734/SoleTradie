@@ -48,6 +48,7 @@ part 'estimate_builder/estimate_builder_gps_helpers.dart';
 part 'estimate_builder/estimate_builder_scanner_helpers.dart';
 part 'estimate_builder/estimate_builder_templates.dart';
 part 'estimate_builder/estimate_builder_type_helpers.dart';
+part 'estimate_builder/estimate_builder_document_number.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -3006,28 +3007,6 @@ Now extract from this invoice text:
         );
       }
     }
-  }
-
-  Future<String> _getNextDocumentNumber() async {
-    final prefs = await SharedPreferences.getInstance();
-    final now = DateTime.now();
-    final yy = (now.year % 100).toString().padLeft(2, '0');
-    final mm = now.month.toString().padLeft(2, '0');
-    final dd = now.day.toString().padLeft(2, '0');
-    final dateKey = '$yy$mm$dd'; // e.g. 260903
-
-    final lastDate = prefs.getString('last_document_date') ?? '';
-    int counter = 1;
-    if (lastDate == dateKey) {
-      counter = (prefs.getInt('last_document_counter') ?? 0) + 1;
-    } else {
-      counter = 1;
-    }
-
-    await prefs.setString('last_document_date', dateKey);
-    await prefs.setInt('last_document_counter', counter);
-
-    return '$dateKey${counter.toString()}';
   }
 
   Future<void> _generateEstimatePdf(
