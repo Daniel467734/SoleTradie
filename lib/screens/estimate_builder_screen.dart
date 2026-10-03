@@ -47,6 +47,7 @@ part 'estimate_builder/estimate_builder_drag.dart';
 part 'estimate_builder/estimate_builder_gps_helpers.dart';
 part 'estimate_builder/estimate_builder_scanner_helpers.dart';
 part 'estimate_builder/estimate_builder_receipt_ai.dart';
+part 'estimate_builder/estimate_builder_subsection_dialogs.dart';
 part 'estimate_builder/estimate_builder_templates.dart';
 part 'estimate_builder/estimate_builder_type_helpers.dart';
 part 'estimate_builder/estimate_builder_document_number.dart';
@@ -5227,33 +5228,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
   //    UI thread never blocks on it.
   // 3. Guard against overlapping saves (if one is still in-flight when the next
   //    debounce fires, queue a single follow-up save instead of stacking isolates).
-  void _confirmDeleteSubsection(SubsectionData section) async {
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Subsection'),
-        content: Text(
-          'Are you sure you want to delete the subsection "${section.name}"? '
-          'All items in this section will also be removed. This cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (shouldDelete == true) {
-      _deleteSubsection(section);
-    }
-  }
-
   /// Add this method to handle scanned receipt text from PDF
   Future<void> _scanReceiptFromText(String section, String text) async {
     // Do NOT call _scanReceipt here!
