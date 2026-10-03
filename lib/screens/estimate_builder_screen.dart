@@ -51,6 +51,7 @@ part 'estimate_builder/estimate_builder_subsection_dialogs.dart';
 part 'estimate_builder/estimate_builder_pdf_helpers.dart';
 part 'estimate_builder/estimate_builder_pdf_dialogs.dart';
 part 'estimate_builder/estimate_builder_gps_persistence.dart';
+part 'estimate_builder/estimate_builder_save_helpers.dart';
 part 'estimate_builder/estimate_builder_templates.dart';
 part 'estimate_builder/estimate_builder_type_helpers.dart';
 part 'estimate_builder/estimate_builder_document_number.dart';
@@ -2176,37 +2177,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
       return newItems;
     }
     return null;
-  }
-
-  void _saveEstimate() async {
-    try {
-      widget.job.estimateItems
-        ..clear()
-        ..addAll(items.map((e) => estimate_item.EstimateItem(
-              name: e.name,
-              description: e.description,
-              unitPrice: e.unitPrice,
-              quantity: e.quantity,
-              purchasePrice: e.purchasePrice,
-              section: e.section,
-            )));
-
-      final saved = await _saveInProgressEstimate();
-      if (saved) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Build saved successfully.')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Unable to save build. Please try again.')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save build: $e')),
-      );
-    }
   }
 
   String normalize(String? s) => (s ?? '')
