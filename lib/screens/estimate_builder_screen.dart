@@ -47,6 +47,7 @@ part 'estimate_builder/estimate_builder_drag.dart';
 part 'estimate_builder/estimate_builder_gps_helpers.dart';
 part 'estimate_builder/estimate_builder_scanner_helpers.dart';
 part 'estimate_builder/estimate_builder_templates.dart';
+part 'estimate_builder/estimate_builder_type_helpers.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -322,45 +323,6 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
   /// 🔴 NEW: Fixed quoted total for the entire document from the original estimate/quote.
   /// Used at the bottom to show overall "Quote Remaining" alongside Subtotal/GST/Total.
   double _quotedDocumentTotal = 0.0;
-
-  String _buildTypeLabel(String? type) {
-    switch (type) {
-      case 'invoice':
-        return 'Invoice';
-      case 'quote':
-        return 'Quote';
-      case 'estimate':
-      default:
-        return 'Estimate';
-    }
-  }
-
-  IconData _buildTypeIcon(String? type) {
-    switch (type) {
-      case 'invoice':
-        return Icons.receipt_long;
-      case 'quote':
-        return Icons.request_quote;
-      case 'estimate':
-      default:
-        return Icons.description;
-    }
-  }
-
-  Widget _buildTypeOption(String value, IconData icon, String label) {
-    final bool isSelected = value == _buildType;
-    return SimpleDialogOption(
-      onPressed: () => Navigator.pop(context, value),
-      child: Row(
-        children: [
-          Icon(icon),
-          const SizedBox(width: 8),
-          Expanded(child: Text(label)),
-          if (isSelected) const Icon(Icons.check, color: Colors.green),
-        ],
-      ),
-    );
-  }
 
   /// Lets the user change the build's type (estimate/quote/invoice) from
   /// within the builder at any time - e.g. if the wrong type was chosen when
