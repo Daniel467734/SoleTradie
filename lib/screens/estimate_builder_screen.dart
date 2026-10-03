@@ -44,6 +44,7 @@ part 'estimate_builder/estimate_builder_profit.dart';
 part 'estimate_builder/estimate_builder_totals.dart';
 part 'estimate_builder/estimate_builder_pricebook.dart';
 part 'estimate_builder/estimate_builder_drag.dart';
+part 'estimate_builder/estimate_builder_gps_helpers.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -6882,27 +6883,6 @@ Now extract from this invoice text:
     } catch (e) {
       print('❌ Error during geocoding/location test: $e');
     }
-  }
-
-  /// Calculate distance between two coordinates in meters
-  double _calculateDistance(
-      double lat1, double lon1, double lat2, double lon2) {
-    const double earthRadius = 6371000; // Earth radius in meters
-    final double dLat = _toRadians(lat2 - lat1);
-    final double dLon = _toRadians(lon2 - lon1);
-
-    final double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(_toRadians(lat1)) *
-            math.cos(_toRadians(lat2)) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
-
-    return earthRadius * c;
-  }
-
-  double _toRadians(double degrees) {
-    return degrees * (math.pi / 180);
   }
 
   // Helper functions for EstimateBuild management
