@@ -2363,6 +2363,25 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
     }
   }
 
+  void _attachGeneratedPdf(String? attachmentPath, String fileName) {
+    setState(() {
+      widget.job.attachments ??= [];
+      if (attachmentPath != null &&
+          !widget.job.attachments!.contains(attachmentPath)) {
+        widget.job.attachments!.add(attachmentPath);
+        print('📎 Added PDF to job attachments: $fileName');
+      }
+    });
+  }
+
+  void _appendFinalEstimateVersion(EstimateVersion version) {
+    setState(() {
+      widget.job.estimateVersions =
+          List<EstimateVersion>.from(widget.job.estimateVersions);
+      widget.job.estimateVersions.add(version);
+    });
+  }
+
   Future<void> _generateEstimatePdf(
       {required String type,
       required String layout,
@@ -3161,15 +3180,7 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
       // ✅ IMPORTANT: Add the PDF to job.attachments immediately after saving
       // This ensures subsequent document generations use correct naming
       // (avoiding duplicate names for multiple PDFs)
-      setState(() {
-        widget.job.attachments ??= [];
-        final attachmentPath = cloudPdfUrl ?? file?.path;
-        if (attachmentPath != null &&
-            !widget.job.attachments!.contains(attachmentPath)) {
-          widget.job.attachments!.add(attachmentPath);
-          print('📎 Added PDF to job attachments: $fileName');
-        }
-      });
+      _attachGeneratedPdf(cloudPdfUrl ?? file?.path, fileName);
     } catch (e, stack) {
       print('❌ Error saving PDF: $e\n$stack');
       if (mounted) {
@@ -3242,11 +3253,7 @@ class _EstimateBuilderScreenState extends State<EstimateBuilderScreen>
     version.id ??=
         '${widget.job.id}_doc_${DateTime.now().millisecondsSinceEpoch}';
 
-    setState(() {
-      widget.job.estimateVersions =
-          List<EstimateVersion>.from(widget.job.estimateVersions);
-      widget.job.estimateVersions.add(version);
-    });
+    _appendFinalEstimateVersion(version);
 
     // Preserve the in-progress build(s) that produced this document instead
     // of deleting them - mark them as finalized/linked to the resulting
