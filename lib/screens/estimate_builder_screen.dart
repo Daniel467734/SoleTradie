@@ -49,6 +49,7 @@ part 'estimate_builder/estimate_builder_scanner_helpers.dart';
 part 'estimate_builder/estimate_builder_templates.dart';
 part 'estimate_builder/estimate_builder_type_helpers.dart';
 part 'estimate_builder/estimate_builder_document_number.dart';
+part 'estimate_builder/estimate_builder_notes.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -5972,32 +5973,6 @@ Now extract from this invoice text:
     }
   }
 
-  String? _loadBuilderNoteFromJob() {
-    return widget.job.notes
-        ?.firstWhereOrNull((note) => note.startsWith(_builderNotePrefix))
-        ?.substring(_builderNotePrefix.length);
-  }
-
-  void _syncBuilderNoteToJob() {
-    final text = _jobNotesController.text.trim();
-    final notes = widget.job.notes ?? <String>[];
-    final existingIndex =
-        notes.indexWhere((note) => note.startsWith(_builderNotePrefix));
-    if (text.isEmpty) {
-      if (existingIndex != -1) {
-        notes.removeAt(existingIndex);
-      }
-    } else {
-      final noteText = '$_builderNotePrefix$text';
-      if (existingIndex != -1) {
-        notes[existingIndex] = noteText;
-      } else {
-        notes.add(noteText);
-      }
-    }
-    widget.job.notes = notes;
-  }
-
   String _generateScopeSummaryText() {
     final customerName = (widget.job.companyName != null &&
             widget.job.companyName!.trim().isNotEmpty)
@@ -6087,11 +6062,6 @@ Now extract from this invoice text:
     }
 
     return summaryLines.join('\n\n').trim();
-  }
-
-  Future<void> _saveJobNotes() async {
-    _syncBuilderNoteToJob();
-    await _persistJobToDisk();
   }
 
   Future<String?> _createInvoiceSnapshotBuilds({
