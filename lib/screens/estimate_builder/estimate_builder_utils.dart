@@ -254,4 +254,71 @@ extension _EstimateBuilderUtilsExt on _EstimateBuilderScreenState {
       _debouncedAutoSave();
     }
   }
+
+  TextEditingController _getSectionDescriptionController(
+      SubsectionData section) {
+    return _sectionDescriptionControllers.putIfAbsent(
+      section.name,
+      () => TextEditingController(text: section.description),
+    );
+  }
+
+  TextEditingController _getSectionExtraCostController(SubsectionData section) {
+    return _sectionExtraCostControllers.putIfAbsent(
+      section.name,
+      () => TextEditingController(
+          text: section.extraCost == 0
+              ? ''
+              : section.extraCost.toStringAsFixed(2)),
+    );
+  }
+
+  /// Synchronizes cached section controllers with loaded model values.
+  void _syncSectionDescriptionControllersFromModel() {
+    for (final section in _subsections) {
+      final controller = _sectionDescriptionControllers[section.name];
+      if (controller != null && controller.text != section.description) {
+        controller.text = section.description;
+      }
+      final costController = _sectionExtraCostControllers[section.name];
+      final costText =
+          section.extraCost == 0 ? '' : section.extraCost.toStringAsFixed(2);
+      if (costController != null && costController.text != costText) {
+        costController.text = costText;
+      }
+    }
+  }
+
+  void _renameSectionRelatedKeys(String oldName, String newName) {
+    if (_sectionDescriptionControllers.containsKey(oldName)) {
+      final controller = _sectionDescriptionControllers.remove(oldName)!;
+      _sectionDescriptionControllers[newName] = controller;
+    }
+    if (_sectionExtraCostControllers.containsKey(oldName)) {
+      final controller = _sectionExtraCostControllers.remove(oldName)!;
+      _sectionExtraCostControllers[newName] = controller;
+    }
+    if (_sectionSearchControllers.containsKey(oldName)) {
+      final controller = _sectionSearchControllers.remove(oldName)!;
+      _sectionSearchControllers[newName] = controller;
+    }
+    if (_sectionSearchFocusNodes.containsKey(oldName)) {
+      final focusNode = _sectionSearchFocusNodes.remove(oldName)!;
+      _sectionSearchFocusNodes[newName] = focusNode;
+    }
+    if (_sectionSearchQueries.containsKey(oldName)) {
+      _sectionSearchQueries[newName] = _sectionSearchQueries.remove(oldName)!;
+    }
+    if (_sectionSearchShowMore.containsKey(oldName)) {
+      _sectionSearchShowMore[newName] = _sectionSearchShowMore.remove(oldName)!;
+    }
+    if (_sectionSearchAddedItems.containsKey(oldName)) {
+      _sectionSearchAddedItems[newName] =
+          _sectionSearchAddedItems.remove(oldName)!;
+    }
+    if (_sectionSearchAddCounts.containsKey(oldName)) {
+      _sectionSearchAddCounts[newName] =
+          _sectionSearchAddCounts.remove(oldName)!;
+    }
+  }
 }
