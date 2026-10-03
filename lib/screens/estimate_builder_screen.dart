@@ -45,6 +45,7 @@ part 'estimate_builder/estimate_builder_totals.dart';
 part 'estimate_builder/estimate_builder_pricebook.dart';
 part 'estimate_builder/estimate_builder_drag.dart';
 part 'estimate_builder/estimate_builder_gps_helpers.dart';
+part 'estimate_builder/estimate_builder_scanner_helpers.dart';
 
 // 🔴 PERFORMANCE: Top-level function so it can run on a background isolate via
 // compute(). Encoding the full pricebook (50k+ items) with jsonEncode() is
@@ -5733,30 +5734,6 @@ Now extract from this invoice text:
   //    UI thread never blocks on it.
   // 3. Guard against overlapping saves (if one is still in-flight when the next
   //    debounce fires, queue a single follow-up save instead of stacking isolates).
-  Future<String?> _scanBarcode() async {
-    bool scanned = false;
-    return await Navigator.push<String>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('Scan Barcode')),
-          body: MobileScanner(
-            onDetect: (capture) {
-              if (scanned) return;
-              final barcode = capture.barcodes.first.rawValue;
-              if (barcode != null && barcode.isNotEmpty) {
-                scanned = true;
-                if (Navigator.of(_).canPop()) {
-                  Navigator.pop(_, barcode);
-                }
-              }
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
   void _confirmDeleteSubsection(SubsectionData section) async {
     final shouldDelete = await showDialog<bool>(
       context: context,
